@@ -551,11 +551,27 @@ function applyIcSnaps(baseConns){
     for(let ci=0;ci<conns.length;ci++){
       const c=conns[ci];
       if(c.type!=='gravity')continue;
-      // Skip connections that already terminate at this IC
-      const startId=c.id.split('-')[0];
       if(c.id.includes(`-sn-${ic.id}-`))continue;
+      const id1=`${c.id}-sn-${ic.id}-a`;
+      const id2=`${c.id}-sn-${ic.id}-b`;
+      // Once an IC has been snapped to a pipe it must stay connected no matter how
+      // far it is dragged — the 20px proximity check only applies on first contact.
+      // After the initial snap, connectionWaypoints['ic-st'] disappears (replaced by
+      // the two sub-segments) so the proximity check could never match again anyway.
+      const alreadySnapped=!!(connectionWaypoints[id1]||connectionWaypoints[id2]);
       const path=connectionWaypoints[c.id]??c.coords;
-      // Don't split if IC is one of the endpoints
+      if(alreadySnapped){
+        // Reconnect both ends to the current IC position — waypoint sync will
+        // update the stored paths so intermediate nodes are preserved.
+        const eIn=icEdgePt(ic,path[0]);
+        const eOut=icEdgePt(ic,path[path.length-1]);
+        conns.splice(ci,1,
+          {id:id1,coords:[path[0],eIn],color:c.color,width:c.width,type:c.type},
+          {id:id2,coords:[eOut,path[path.length-1]],color:c.color,width:c.width,type:c.type}
+        );
+        ci++;break;
+      }
+      // First contact: proximity check
       const ep0=map.latLngToContainerPoint([path[0].lat,path[0].lng]);
       const epN=map.latLngToContainerPoint([path[path.length-1].lat,path[path.length-1].lng]);
       if(Math.hypot(icPx.x-ep0.x,icPx.y-ep0.y)<SNAP_PX)continue;
@@ -572,16 +588,13 @@ function applyIcSnaps(baseConns){
       const afterPts=path.slice(splitIdx+1);
       const eIn=icEdgePt(ic,beforePts[beforePts.length-1]);
       const eOut=icEdgePt(ic,afterPts.length?afterPts[0]:path[path.length-1]);
-      const id1=`${c.id}-sn-${ic.id}-a`;
-      const id2=`${c.id}-sn-${ic.id}-b`;
       if(!connectionWaypoints[id1])connectionWaypoints[id1]=[...beforePts,eIn];
       if(!connectionWaypoints[id2])connectionWaypoints[id2]=[eOut,...afterPts];
       conns.splice(ci,1,
         {id:id1,coords:[path[0],eIn],color:c.color,width:c.width,type:c.type},
         {id:id2,coords:[eOut,path[path.length-1]],color:c.color,width:c.width,type:c.type}
       );
-      ci++;
-      break;
+      ci++;break;
     }
   }
   return conns;
