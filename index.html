@@ -280,6 +280,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 const SYMBOLS = [
   {id:'existing_septic_tank',label:'Septic Tank (Existing)',shortLabel:'Septic Tank',category:'existing',color:'#78716C',dims:{type:'rectangle',width:2.4,depth:1.2}},
   {id:'last_inspection_chamber',label:'Last Inspection Chamber',shortLabel:'Last IC',category:'existing',color:'#DC2626',dims:{type:'circle',radius:0.3}},
+  {id:'existing_inspection_chamber',label:'Existing Inspection Chamber',shortLabel:'Exist IC',category:'existing',color:'#6B7280',dims:{type:'circle',radius:0.3}},
   {id:'new_inspection_chamber_large',label:'New IC (600mm)',shortLabel:'New IC 600',category:'new',color:'#16A34A',dims:{type:'circle',radius:0.3}},
   {id:'new_inspection_chamber_small',label:'New IC (300mm)',shortLabel:'New IC 300',category:'new',color:'#16A34A',dims:{type:'circle',radius:0.15},small:true},
   {id:'sewage_treatment_plant',label:'Sewage Treatment Plant',shortLabel:'STP',category:'new',color:'#16A34A',dims:{type:'rectangle',width:2.28,depth:1.76,userDefined:true}},
@@ -887,7 +888,7 @@ function renderMarker(m){
   const rot=m.rotation||0;
   // Only show scaled footprints for large features — small circle markers
   // (ICs, pump station) use the pin itself as the visual representation.
-  const showFootprint=!['last_inspection_chamber','new_inspection_chamber_large',
+  const showFootprint=!['last_inspection_chamber','existing_inspection_chamber','new_inspection_chamber_large',
     'new_inspection_chamber_small','pumping_station','kiosk','discharge_point','electrical_point',
     'sewage_treatment_plant','drainage_field','existing_septic_tank'].includes(sym.id);
   if(sym.dims&&showFootprint){
@@ -1111,7 +1112,7 @@ function pinHtml(sym,isVio,rot){
     return`<div style="width:42px;height:32px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45)">
       <div style="width:34px;height:24px;border-radius:3px;background:${sym.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">K</div></div>`;
   }
-  const label={existing_septic_tank:'ST',last_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',pumping_station:'PS',summer_soakaway:'SA',discharge_point:'DP',electrical_point:'E'}[sym.id]||'?';
+  const label={existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',pumping_station:'PS',summer_soakaway:'SA',discharge_point:'DP',electrical_point:'E'}[sym.id]||'?';
   const sz=sym.small?26:34,br=sz/2,bw=sym.small?2:2.5,inner=sym.small?18:24;
   return`<div style="width:${sz}px;height:${sz}px;border-radius:${br}px;border:${bw}px solid ${bc};background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45)">
     <div style="width:${inner}px;height:${inner}px;border-radius:${inner/2}px;background:${sym.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;letter-spacing:-0.5px">${label}</div></div>`;
@@ -1219,7 +1220,7 @@ function renderPalette(){
       }else if(s.id==='drainage_field'){
         iconHtml=`<div class="df-mini"><div class="df-mh"></div><div class="df-mv"><div class="df-mvs"></div><div class="df-mvs"></div></div><div class="df-mh"></div><div class="df-mv"><div class="df-mvs"></div><div class="df-mvs"></div></div><div class="df-mh"></div></div>`;
       }else{
-        const label={existing_septic_tank:'ST',last_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',kiosk:'K',pumping_station:'PS',summer_soakaway:'SA',discharge_point:'DP',electrical_point:'E'}[s.id]||'?';
+        const label={existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',kiosk:'K',pumping_station:'PS',summer_soakaway:'SA',discharge_point:'DP',electrical_point:'E'}[s.id]||'?';
         const sz=s.small?'sm':'';
         iconHtml=`<div class="pal-ico ${sz}" style="background:${s.color}">${label}</div>`;
       }
