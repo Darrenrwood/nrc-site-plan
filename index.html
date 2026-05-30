@@ -613,12 +613,14 @@ function computeConns(markers){
 
   if(pump&&(drain||disc)){
     const pc={lat:pump.lat,lng:pump.lng};
-    const dest=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,pc);
-    out.push({id:'pump-dest',coords:[icEdgePt(pump,dest),dest],color:'#2563EB',width:3,type:'pressure'});
+    const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,pc);
+    const destEnd=disc?icEdgePt(disc,pc):destCenter;
+    out.push({id:'pump-dest',coords:[icEdgePt(pump,destCenter),destEnd],color:'#2563EB',width:3,type:'pressure'});
   }
   if(stp&&!pump&&stpOut&&(drain||disc)){
-    const dest=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,stpOut);
-    out.push({id:'stp-dest',coords:[stpOut,dest],color:'#92400E',width:3,type:'gravity'});
+    const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,stpOut);
+    const destEnd=disc?icEdgePt(disc,stpOut):destCenter;
+    out.push({id:'stp-dest',coords:[stpOut,destEnd],color:'#92400E',width:3,type:'gravity'});
   }
   if(kiosk&&elec){
     const ref=stp?{lat:stp.lat,lng:stp.lng}:{lat:elec.lat,lng:elec.lng};
@@ -635,13 +637,13 @@ function computeConns(markers){
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
     out.push({id:'ic-st',coords:[icEdgePt(ic,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
   }
-  // Existing ICs chained to the last IC (and to each other) with brown gravity pipe.
-  // Nearest-neighbour order starting from the last IC so the chain is sensible.
+  // Existing ICs chained together and to the last IC with brown gravity pipe.
+  // Nearest-neighbour order starting from the last IC (or first existing IC if no last IC).
   const existIcs=markers.filter(m=>m.symbolId==='existing_inspection_chamber');
   if(existIcs.length){
     const remaining=[...existIcs];
     let prev=ic; // start from last IC; null if not placed
-    if(!prev){prev=remaining.splice(0,1)[0];} // fallback: start from first existing IC
+    if(!prev){prev=remaining.splice(0,1)[0];} // fallback: start chain from first existing IC
     while(remaining.length>0){
       let best=0,bestD=Infinity;
       for(let i=0;i<remaining.length;i++){
@@ -649,10 +651,21 @@ function computeConns(markers){
         if(d<bestD){bestD=d;best=i;}
       }
       const next=remaining.splice(best,1)[0];
-      out.push({id:`eic-${prev.id}-${next.id}`,coords:[icEdgePt(prev,next),icEdgePt(next,prev)],color:'#92400E',width:3,type:'gravity'});
+      const e0=icEdgePt(prev,next),e1=icEdgePt(next,prev);
+      console.log('[eic] adding pipe',prev.id,'→',next.id,'coords',e0,e1);
+      out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity'});
       prev=next;
     }
+    // If chain started from last IC (red), also connect the tail existing IC to the
+    // existing septic tank when no ic-st pipe has already been generated (ic&&st covers that).
+    // If chain started without a last IC, connect the tail existing IC to the ST if present.
+    if(!ic&&st){
+      const [A,B]=stpFaces(st);
+      const stIn=dist(A,prev)<dist(B,prev)?A:B;
+      out.push({id:`eic-${prev.id}-st`,coords:[icEdgePt(prev,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
+    }
   }
+  console.log('[computeConns] total connections:', out.length, out.map(c=>c.id));
   return out;
 }
 
