@@ -1501,7 +1501,7 @@ function openMaterials() {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 renderPalette();
 renderPsRows();
-if (!autoLoad()) doLoad(); // restore saved state; only fetch INSPIRE if nothing saved
+localStorage.removeItem(SAVE_KEY); // always start fresh on page open
 map.on('zoomend', renderConnections); // refresh pixel-based STP face endpoints on zoom
 map.on('click', hideRotHandle);
 
