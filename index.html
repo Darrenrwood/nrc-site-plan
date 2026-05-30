@@ -634,16 +634,15 @@ function computeConns(markers){
     const front=dist(kN,ref)<dist(kS,ref)?kN:kS;
     out.push({id:'kiosk-elec',coords:[front,{lat:elec.lat,lng:elec.lng}],color:'#111827',width:2.5,dashed:true,type:'cable'});
   }
-  // IC → existing septic tank (same rule as IC → STP: nearest short side)
-  if(ic&&st){
-    const [A,B]=stpFaces(st); // septic tank has same 46×30px icon as STP
+  // Existing ICs chained together, connecting lastIC → existIC1 → … → lastExistIC → ST.
+  // The direct ic→st connection is only used when there are NO existing ICs in the chain.
+  const existIcs=markers.filter(m=>m.symbolId==='existing_inspection_chamber');
+  if(!existIcs.length&&ic&&st){
+    const [A,B]=stpFaces(st);
     const ic2={lat:ic.lat,lng:ic.lng};
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
     out.push({id:'ic-st',coords:[icEdgePt(ic,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
   }
-  // Existing ICs chained together and to the last IC with brown gravity pipe.
-  // Nearest-neighbour order starting from the last IC (or first existing IC if no last IC).
-  const existIcs=markers.filter(m=>m.symbolId==='existing_inspection_chamber');
   if(existIcs.length){
     const remaining=[...existIcs];
     let prev=ic; // start from last IC; null if not placed
@@ -660,10 +659,8 @@ function computeConns(markers){
       out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity'});
       prev=next;
     }
-    // If chain started from last IC (red), also connect the tail existing IC to the
-    // existing septic tank when no ic-st pipe has already been generated (ic&&st covers that).
-    // If chain started without a last IC, connect the tail existing IC to the ST if present.
-    if(!ic&&st){
+    // Connect the tail of the chain to the existing ST (whether chain started from lastIC or existIC).
+    if(st){
       const [A,B]=stpFaces(st);
       const stIn=dist(A,prev)<dist(B,prev)?A:B;
       out.push({id:`eic-${prev.id}-st`,coords:[icEdgePt(prev,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
@@ -1580,10 +1577,11 @@ function computeMaterials() {
   addG(effIc, stp);                          // last IC (or promoted IC) → STP inlet
   if (stp && pump) addG(stp, pump);          // STP outlet → pump (short gravity section)
   if (stp && !pump) addG(stp, disc || drain);// STP outlet → discharge point or drain field
-  addG(ic, st);                              // last IC → existing septic tank
 
-  // Existing IC chain (nearest-neighbour, same order as computeConns)
+  // Existing IC chain (nearest-neighbour, same order as computeConns).
+  // Direct ic→st only used when no existing ICs form the chain.
   const existIcs = placedMarkers.filter(m => m.symbolId === 'existing_inspection_chamber');
+  if (!existIcs.length) addG(ic, st);        // direct: last IC → existing septic tank
   if (existIcs.length) {
     const rem = [...existIcs];
     let prev = ic || rem.splice(0, 1)[0];
@@ -1597,7 +1595,7 @@ function computeMaterials() {
       gravLen += bestD;
       prev = next;
     }
-    if (!ic && st) addG(prev, st);
+    if (st) addG(prev, st);                  // chain tail → existing septic tank
   }
 
   // Pressure pipe: pump → discharge point or drainage field
