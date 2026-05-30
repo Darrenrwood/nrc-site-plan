@@ -381,7 +381,6 @@ let selectedPlantPE = null;
 let violatingIds = new Set();
 let confirmingId = null;
 let connectionWaypoints = {};
-let lastRenderedConns = []; // conns array from last renderConnections — kept in sync with connectionWaypoints
 let bendViolations = {};
 let dimensionPending = null; // {lat,lng,symbol}
 let markerCounter = 0;
@@ -999,7 +998,6 @@ function renderConnections(){
 
   const baseConns=computeConns(placedMarkers);
   const conns=applyIcSnaps(baseConns);
-  lastRenderedConns=conns; // keep in sync with connectionWaypoints assigned below
 
   // Sync waypoints
   const nw={};
@@ -1530,29 +1528,63 @@ function _rotUp() {
 }
 
 // ── Materials summary ─────────────────────────────────────────────────────────
+// Computed fresh from placedMarkers every time — no dependency on
+// connectionWaypoints or lastRenderedConns (both rely on pixel-space render
+// state that can drift). Centre-to-centre dist() gives accurate installed
+// pipe lengths for a planning estimate.
 function computeMaterials() {
-  const newICs = placedMarkers.filter(m =>
-    m.symbolId === 'new_inspection_chamber_large' ||
-    m.symbolId === 'new_inspection_chamber_small'
-  ).length;
-  const pumps = placedMarkers.filter(m => m.symbolId === 'pumping_station').length;
+  const get = id => placedMarkers.find(m => m.symbolId === id);
+  const stp   = get('sewage_treatment_plant');
+  const ic    = get('last_inspection_chamber');
+  const st    = get('existing_septic_tank');
+  const pump  = get('pumping_station');
+  const drain = get('drainage_field');
+  const disc  = get('discharge_point');
+  const kiosk = get('kiosk');
+  const elec  = get('electrical_point');
+  const promotedIc = promotedLastIcId ? placedMarkers.find(m => m.id === promotedLastIcId) : null;
+  const effIc = promotedIc || ic;
+
+  const icLarge = placedMarkers.filter(m => m.symbolId === 'new_inspection_chamber_large').length;
+  const icSmall = placedMarkers.filter(m => m.symbolId === 'new_inspection_chamber_small').length;
+  const pumps   = placedMarkers.filter(m => m.symbolId === 'pumping_station').length;
 
   let gravLen = 0, presLen = 0, cableLen = 0;
-  // typeMap must come from the same render that built connectionWaypoints.
-  // Re-running applyIcSnaps independently risks a different set of split IDs
-  // (pixel-based proximity depends on zoom/position), leaving some waypoint
-  // paths without a type and silently dropping their lengths.
-  const typeMap = Object.fromEntries(lastRenderedConns.map(c=>[c.id,c.type]));
-  for (const [id, path] of Object.entries(connectionWaypoints)) {
-    if (!path || path.length < 2) continue;
-    let len = 0;
-    for (let i = 0; i < path.length - 1; i++) len += dist(path[i], path[i + 1]);
-    const type = typeMap[id];
-    if (type === 'gravity') gravLen += len;
-    else if (type === 'pressure') presLen += len;
-    else if (type === 'cable') cableLen += len;
+  const addG = (a, b) => { if (a && b) gravLen += dist(a, b); };
+  const addP = (a, b) => { if (a && b) presLen += dist(a, b); };
+  const addC = (a, b) => { if (a && b) cableLen += dist(a, b); };
+
+  // Gravity foul pipe — mirrors computeConns topology exactly
+  addG(effIc, stp);                          // last IC (or promoted IC) → STP inlet
+  if (stp && pump) addG(stp, pump);          // STP outlet → pump (short gravity section)
+  if (stp && !pump) addG(stp, disc || drain);// STP outlet → discharge point or drain field
+  addG(ic, st);                              // last IC → existing septic tank
+
+  // Existing IC chain (nearest-neighbour, same order as computeConns)
+  const existIcs = placedMarkers.filter(m => m.symbolId === 'existing_inspection_chamber');
+  if (existIcs.length) {
+    const rem = [...existIcs];
+    let prev = ic || rem.splice(0, 1)[0];
+    while (rem.length > 0) {
+      let best = 0, bestD = Infinity;
+      for (let i = 0; i < rem.length; i++) {
+        const d = dist(prev, rem[i]);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      const next = rem.splice(best, 1)[0];
+      gravLen += bestD;
+      prev = next;
+    }
+    if (!ic && st) addG(prev, st);
   }
-  return { newICs, pumps, gravLen, presLen, cableLen };
+
+  // Pressure pipe: pump → discharge point or drainage field
+  if (pump) addP(pump, disc || drain);
+
+  // Armoured cable: kiosk → electrical point
+  addC(kiosk, elec);
+
+  return { icLarge, icSmall, pumps, gravLen, presLen, cableLen };
 }
 
 function fmtLen(m) {
@@ -1561,29 +1593,39 @@ function fmtLen(m) {
 }
 
 function openMaterials() {
-  const { newICs, pumps, gravLen, presLen, cableLen } = computeMaterials();
-  const noItems = !placedMarkers.length;
+  if (!placedMarkers.length) {
+    document.getElementById('mat-content').innerHTML =
+      `<p style="color:#9CA3AF;text-align:center;padding:24px 0;font-size:14px">No items placed on the map yet.</p>`;
+    showModal('mat-modal');
+    return;
+  }
+
+  const { icLarge, icSmall, pumps, gravLen, presLen, cableLen } = computeMaterials();
 
   const rows = [
-    { color: '#6B7280', icon: '🔲', label: 'New inspection chambers', value: newICs + (newICs === 1 ? ' chamber' : ' chambers'), isCount: true, empty: newICs === 0 },
-    { color: '#1E40AF', icon: '⚙',  label: 'Pump stations',           value: pumps + (pumps === 1 ? ' station' : ' stations'),  isCount: true, empty: pumps === 0 },
-    { color: '#92400E', icon: '━',  label: 'Foul pipe (brown gravity)', value: fmtLen(gravLen), isCount: false, empty: gravLen < 0.05 },
-    { color: '#2563EB', icon: '━',  label: 'MDPE pipe (blue pressure)', value: fmtLen(presLen), isCount: false, empty: presLen < 0.05 },
-    { color: '#111827', icon: '╌',  label: 'Armoured cable',            value: fmtLen(cableLen), isCount: false, empty: cableLen < 0.05 },
-  ];
+    icLarge > 0 && { color:'#16A34A', label:'New IC (600mm)',            value:`${icLarge}`, unit:'chamber' },
+    icSmall > 0 && { color:'#16A34A', label:'New IC (300mm)',            value:`${icSmall}`, unit:'chamber' },
+    pumps   > 0 && { color:'#C2410C', label:'Pumping station',           value:`${pumps}`,   unit:'unit' },
+    gravLen >= 0.05 && { color:'#92400E', label:'Foul gravity pipe',     value:fmtLen(gravLen), unit:null },
+    presLen >= 0.05 && { color:'#2563EB', label:'MDPE pressure pipe',    value:fmtLen(presLen), unit:null },
+    cableLen>= 0.05 && { color:'#111827', label:'Armoured cable',        value:fmtLen(cableLen),unit:null },
+  ].filter(Boolean);
 
-  const html = noItems
-    ? `<p style="color:#9CA3AF;text-align:center;padding:24px 0;font-size:14px">No items placed on the map yet.</p>`
-    : rows.map(r => `
-      <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #F3F4F6">
-        <div style="width:36px;height:36px;border-radius:8px;background:${r.color}22;border:1.5px solid ${r.color}55;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <span style="color:${r.color};font-size:${r.isCount ? 16 : 20}px;font-weight:700;letter-spacing:${r.isCount ? 0 : -2}px">${r.icon}</span>
-        </div>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;color:#6B7280;margin-bottom:2px">${r.label}</div>
-          <div style="font-size:17px;font-weight:700;color:${r.empty ? '#D1D5DB' : '#111827'}">${r.value}</div>
-        </div>
-      </div>`).join('');
+  const empty = !rows.length;
+  const html = empty
+    ? `<p style="color:#9CA3AF;text-align:center;padding:24px 0;font-size:14px">No connected items to summarise.</p>`
+    : rows.map(r => {
+        const isLen = r.unit === null;
+        const disp  = isLen ? r.value : `${r.value} ${r.value === '1' ? r.unit : r.unit + 's'}`;
+        return `
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #F3F4F6">
+          <div style="width:10px;flex-shrink:0;align-self:stretch;border-radius:3px;background:${r.color}"></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;color:#6B7280;margin-bottom:1px">${r.label}</div>
+            <div style="font-size:20px;font-weight:700;color:#111827;letter-spacing:-0.5px">${disp}</div>
+          </div>
+        </div>`;
+      }).join('');
 
   document.getElementById('mat-content').innerHTML = html;
   showModal('mat-modal');
