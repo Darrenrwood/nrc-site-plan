@@ -428,15 +428,28 @@ function computeConns(markers){
   let stpIn=null,stpOut=null;
 
   if(stp){
-    const {width}=effDims(stp,SYM.sewage_treatment_plant);
-    const cl=Math.cos(stp.lat*Math.PI/180),hw=(width/2)/(111000*cl);
+    const {width,depth}=effDims(stp,SYM.sewage_treatment_plant);
+    const cl=Math.cos(stp.lat*Math.PI/180);
     const stpC={lat:stp.lat,lng:stp.lng}, rot=stp.rotation||0;
-    const rawE={lat:stp.lat,lng:stp.lng+hw},rawW={lat:stp.lat,lng:stp.lng-hw};
-    const E=rot?rotatePoint(rawE,stpC,rot):rawE;
-    const W=rot?rotatePoint(rawW,stpC,rot):rawW;
-    const ds=pump?{lat:pump.lat,lng:pump.lng}:disc?{lat:disc.lat,lng:disc.lng}:drain?{lat:drain.lat,lng:drain.lng}:null;
-    if(ds){dist(E,ds)<dist(W,ds)?(stpOut=E,stpIn=W):(stpOut=W,stpIn=E);}
-    else if(ic){const ic2={lat:ic.lat,lng:ic.lng};dist(E,ic2)<dist(W,ic2)?(stpIn=E,stpOut=W):(stpIn=W,stpOut=E);}
+    // Connection points are the centres of the two shortest sides
+    let rawA,rawB;
+    if(width>=depth){
+      const hw=(width/2)/(111000*cl);
+      rawA={lat:stp.lat,lng:stp.lng+hw};rawB={lat:stp.lat,lng:stp.lng-hw};
+    } else {
+      const hd=(depth/2)/111000;
+      rawA={lat:stp.lat+hd,lng:stp.lng};rawB={lat:stp.lat-hd,lng:stp.lng};
+    }
+    const A=rot?rotatePoint(rawA,stpC,rot):rawA;
+    const B=rot?rotatePoint(rawB,stpC,rot):rawB;
+    // stpIn always = short side closest to the IC (foul inlet rule)
+    if(ic){
+      const ic2={lat:ic.lat,lng:ic.lng};
+      dist(A,ic2)<dist(B,ic2)?(stpIn=A,stpOut=B):(stpIn=B,stpOut=A);
+    } else {
+      const ds=pump?{lat:pump.lat,lng:pump.lng}:disc?{lat:disc.lat,lng:disc.lng}:drain?{lat:drain.lat,lng:drain.lng}:null;
+      if(ds){dist(A,ds)<dist(B,ds)?(stpOut=A,stpIn=B):(stpOut=B,stpIn=A);}
+    }
   }
 
   if(ic&&stp&&stpIn)out.push({id:'ic-stp',coords:[{lat:ic.lat,lng:ic.lng},stpIn],color:'#92400E',width:3,type:'gravity'});
