@@ -422,6 +422,19 @@ function catmullRom(pts, segs=20) {
 }
 
 // ── Connections ───────────────────────────────────────────────────────────────
+// Return the two short-side face centres of the STP icon in geographic coords.
+// Computed in screen-pixel space so the pipe terminates at the visible icon
+// edge regardless of zoom level. Icon is 46x30px, anchor [23,15].
+function stpFaces(m){
+  const rot=(m.rotation||0)*Math.PI/180;
+  const pc=map.latLngToContainerPoint([m.lat,m.lng]);
+  const hw=23; // half icon-width in px (short sides are the 30px tall sides)
+  const dx=hw*Math.cos(rot), dy=hw*Math.sin(rot);
+  return[
+    map.containerPointToLatLng([pc.x+dx,pc.y+dy]),
+    map.containerPointToLatLng([pc.x-dx,pc.y-dy])
+  ];
+}
 function computeConns(markers){
   const get=id=>markers.find(m=>m.symbolId===id);
   const stp=get('sewage_treatment_plant'),ic=get('last_inspection_chamber');
@@ -431,20 +444,10 @@ function computeConns(markers){
   let stpIn=null,stpOut=null;
 
   if(stp){
-    const {width,depth}=effDims(stp,SYM.sewage_treatment_plant);
-    const cl=Math.cos(stp.lat*Math.PI/180);
-    const stpC={lat:stp.lat,lng:stp.lng}, rot=stp.rotation||0;
-    // Connection points are the centres of the two shortest sides
-    let rawA,rawB;
-    if(width>=depth){
-      const hw=(width/2)/(111000*cl);
-      rawA={lat:stp.lat,lng:stp.lng+hw};rawB={lat:stp.lat,lng:stp.lng-hw};
-    } else {
-      const hd=(depth/2)/111000;
-      rawA={lat:stp.lat+hd,lng:stp.lng};rawB={lat:stp.lat-hd,lng:stp.lng};
-    }
-    const A=rot?rotatePoint(rawA,stpC,rot):rawA;
-    const B=rot?rotatePoint(rawB,stpC,rot):rawB;
+    // Use icon pixel dimensions so the pipe visually terminates at the icon edge
+    // at any zoom level. STP icon is 46x30px, anchor [23,15]; short sides are
+    // the 30px (height) sides, displaced ±23px in the icon's width direction.
+    const [A,B]=stpFaces(stp);
     // stpIn always = short side closest to the IC (foul inlet rule)
     if(ic){
       const ic2={lat:ic.lat,lng:ic.lng};
@@ -1239,6 +1242,7 @@ function openMaterials() {
 renderPalette();
 renderPsRows();
 if (!autoLoad()) doLoad(); // restore saved state; only fetch INSPIRE if nothing saved
+map.on('zoomend', renderConnections); // refresh pixel-based STP face endpoints on zoom
 map.on('click', hideRotHandle);
 
 // Allow Enter key in search box
