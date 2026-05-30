@@ -381,6 +381,7 @@ let selectedPlantPE = null;
 let violatingIds = new Set();
 let confirmingId = null;
 let connectionWaypoints = {};
+let lastRenderedConns = []; // conns array from last renderConnections — kept in sync with connectionWaypoints
 let bendViolations = {};
 let dimensionPending = null; // {lat,lng,symbol}
 let markerCounter = 0;
@@ -967,6 +968,7 @@ function renderConnections(){
 
   const baseConns=computeConns(placedMarkers);
   const conns=applyIcSnaps(baseConns);
+  lastRenderedConns=conns; // keep in sync with connectionWaypoints assigned below
 
   // Sync waypoints
   const nw={};
@@ -1505,11 +1507,11 @@ function computeMaterials() {
   const pumps = placedMarkers.filter(m => m.symbolId === 'pumping_station').length;
 
   let gravLen = 0, presLen = 0, cableLen = 0;
-  // Use connectionWaypoints (kept in sync by renderConnections) so lengths
-  // always match exactly what is drawn on screen. Fall back to computeConns
-  // only for the connection type, which is not stored in connectionWaypoints.
-  const conns = applyIcSnaps(computeConns(placedMarkers));
-  const typeMap = Object.fromEntries(conns.map(c=>[c.id,c.type]));
+  // typeMap must come from the same render that built connectionWaypoints.
+  // Re-running applyIcSnaps independently risks a different set of split IDs
+  // (pixel-based proximity depends on zoom/position), leaving some waypoint
+  // paths without a type and silently dropping their lengths.
+  const typeMap = Object.fromEntries(lastRenderedConns.map(c=>[c.id,c.type]));
   for (const [id, path] of Object.entries(connectionWaypoints)) {
     if (!path || path.length < 2) continue;
     let len = 0;
