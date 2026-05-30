@@ -635,6 +635,24 @@ function computeConns(markers){
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
     out.push({id:'ic-st',coords:[icEdgePt(ic,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
   }
+  // Existing ICs chained to the last IC (and to each other) with brown gravity pipe.
+  // Nearest-neighbour order starting from the last IC so the chain is sensible.
+  const existIcs=markers.filter(m=>m.symbolId==='existing_inspection_chamber');
+  if(existIcs.length){
+    const remaining=[...existIcs];
+    let prev=ic; // start from last IC; null if not placed
+    if(!prev){prev=remaining.splice(0,1)[0];} // fallback: start from first existing IC
+    while(remaining.length>0){
+      let best=0,bestD=Infinity;
+      for(let i=0;i<remaining.length;i++){
+        const d=dist(prev,remaining[i]);
+        if(d<bestD){bestD=d;best=i;}
+      }
+      const next=remaining.splice(best,1)[0];
+      out.push({id:`eic-${prev.id}-${next.id}`,coords:[icEdgePt(prev,next),icEdgePt(next,prev)],color:'#92400E',width:3,type:'gravity'});
+      prev=next;
+    }
+  }
   return out;
 }
 
