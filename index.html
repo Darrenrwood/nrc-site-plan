@@ -821,9 +821,17 @@ function renderConnections(){
     const sp=c.type==='gravity'?GRAV_SPACING:PRES_SPACING;
     const ex=connectionWaypoints[c.id];
     const middle=ex?ex.slice(1,-1):null;
-    // Preserve user-dragged middle points; regenerate if none exist (markers may
-    // have been placed closer than the spacing and later moved apart)
-    nw[c.id]=middle&&middle.length>0?[s,...middle,e]:[s,...interpPts(s,e,sp),e];
+    if(middle&&middle.length>0){
+      nw[c.id]=[s,...middle,e];
+    } else {
+      const pts=interpPts(s,e,sp);
+      // Pressure/cable pipes always get at least one draggable midpoint node
+      // so the user can arc the pipe even when markers are close together
+      if(pts.length===0&&(c.type==='pressure'||c.type==='cable')){
+        pts.push({lat:(s.lat+e.lat)/2,lng:(s.lng+e.lng)/2});
+      }
+      nw[c.id]=[s,...pts,e];
+    }
   }
   connectionWaypoints=nw;
 
@@ -1210,17 +1218,19 @@ function computeMaterials() {
   const pumps = placedMarkers.filter(m => m.symbolId === 'pumping_station').length;
 
   let gravLen = 0, presLen = 0, cableLen = 0;
+  // Use connectionWaypoints (kept in sync by renderConnections) so lengths
+  // always match exactly what is drawn on screen. Fall back to computeConns
+  // only for the connection type, which is not stored in connectionWaypoints.
   const conns = computeConns(placedMarkers);
-  for (const c of conns) {
-    // Always use fresh endpoints from computeConns; preserve any user-dragged middle waypoints
-    const s = c.coords[0], e = c.coords[c.coords.length - 1];
-    const saved = connectionWaypoints[c.id];
-    const path = saved ? [s, ...saved.slice(1, -1), e] : c.coords;
+  const typeMap = Object.fromEntries(conns.map(c=>[c.id,c.type]));
+  for (const [id, path] of Object.entries(connectionWaypoints)) {
+    if (!path || path.length < 2) continue;
     let len = 0;
     for (let i = 0; i < path.length - 1; i++) len += dist(path[i], path[i + 1]);
-    if (c.type === 'gravity') gravLen += len;
-    else if (c.type === 'pressure') presLen += len;
-    else if (c.type === 'cable') cableLen += len;
+    const type = typeMap[id];
+    if (type === 'gravity') gravLen += len;
+    else if (type === 'pressure') presLen += len;
+    else if (type === 'cable') cableLen += len;
   }
   return { newICs, pumps, gravLen, presLen, cableLen };
 }
