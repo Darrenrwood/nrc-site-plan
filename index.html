@@ -107,6 +107,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 .dim-btns{display:flex;gap:10px;margin-top:6px}
 .dim-btn{flex:1;padding:13px;border-radius:10px;border:1px solid #444;background:transparent;color:#aaa;font-size:15px;font-weight:600;cursor:pointer}
 .dim-btn.pri{border:none;color:#fff}
+.ic-await-bar{display:none;background:#14532d;border-top:2px solid #16A34A;padding:9px 14px;flex-shrink:0}
+.ic-await-bar.vis{display:flex;align-items:center;gap:8px}
+.ic-await-bar span{flex:1;font-size:13px;color:#86efac;line-height:1.4}
+.ic-await-bar button{background:none;border:none;color:#86efac;font-size:18px;cursor:pointer;padding:0 4px;line-height:1}
 
 /* Rotation handle */
 .rot-grip{position:absolute;width:30px;height:30px;background:#fff;border-radius:50%;border:2.5px solid #3B82F6;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:grab;box-shadow:0 2px 8px rgba(0,0,0,.55);z-index:2000;transform:translate(-50%,-50%);pointer-events:auto;user-select:none;-webkit-user-select:none;touch-action:none;line-height:1}
@@ -146,6 +150,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div id="plant-badge">⚙ <span id="plant-badge-text"></span></div>
 
     <div class="banner" id="grav-banner">⚠ Gravity pipe exceeds 45 m — add a small IC at least every 22 m</div>
+    <div class="banner" id="ic-await-banner" style="background:#14532d;border-color:#16A34A;color:#86efac;cursor:default;display:none">
+      ✅ Place a new IC on the existing foul run between the septic tank and the last IC — it will become the STP connection point
+      <button onclick="cancelIcAwait()" style="float:right;background:none;border:none;color:#86efac;font-size:16px;cursor:pointer;margin-left:8px">✕</button>
+    </div>
     <div class="banner" id="vio-banner" onclick="dismissVio()">⚠ <span id="vio-text">Placement is outside recommended parameters — tap to confirm</span></div>
 
     <div id="load-overlay">
@@ -219,6 +227,22 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
   </div>
 </div>
 
+<!-- IC insertion suggestion modal -->
+<div class="modal" id="ic-suggest-modal">
+  <div class="modal-sheet center">
+    <div class="modal-handle"></div>
+    <div class="modal-title">Shorter pipe run possible</div>
+    <p style="font-size:13px;color:#aaa;line-height:1.6;margin:0 0 4px">
+      The existing septic tank is closer to the new STP than the existing last IC.<br><br>
+      Would you like to insert a new IC into the existing foul pipe run between the septic tank and the last IC? The STP would then connect to this new IC, which would need less new foul pipe.
+    </p>
+    <div class="dim-btns" style="margin-top:16px">
+      <button class="dim-btn" onclick="dismissIcSuggestion()">No — connect to existing IC</button>
+      <button class="dim-btn pri" style="background:#16A34A" onclick="acceptIcSuggestion()">Yes — insert new IC</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -277,6 +301,7 @@ function autoSave() {
       ),
       selectedPlantPE,
       markerCounter,
+      promotedLastIcId,
     }));
   } catch(_) {}
 }
@@ -293,6 +318,7 @@ function autoLoad() {
       Object.entries(s.bendViolations).map(([k,v])=>[k,new Set(v)])
     );
     if (s.selectedPlantPE !== undefined) selectedPlantPE = s.selectedPlantPE;
+    if (s.promotedLastIcId) promotedLastIcId = s.promotedLastIcId;
     if (s.rings) {
       rings = s.rings;
       const poly = L.polygon(rings.map(r=>r.map(c=>[c.lat,c.lng])),
@@ -326,6 +352,9 @@ let connectionWaypoints = {};
 let bendViolations = {};
 let dimensionPending = null; // {lat,lng,symbol}
 let markerCounter = 0;
+let promotedLastIcId = null;   // marker.id of new IC that acts as STP connection point
+let awaitingPromotedIc = false; // true while user is about to place the new IC
+let icSuggestionDismissed = false; // suppress re-prompt after user clicks No
 
 // ── Leaflet layers ────────────────────────────────────────────────────────────
 let map, boundaryLayer = null;
@@ -525,6 +554,9 @@ function computeConns(markers){
   const pump=get('pumping_station'),drain=get('drainage_field');
   const disc=get('discharge_point'),kiosk=get('kiosk'),elec=get('electrical_point');
   const st=get('existing_septic_tank');
+  // If user accepted the IC-insertion suggestion, use the promoted IC as the STP inlet
+  const promotedIc=promotedLastIcId?markers.find(m=>m.id===promotedLastIcId):null;
+  const effIc=promotedIc||ic; // effective IC for STP connection
   const out=[];
   let stpIn=null,stpOut=null;
 
@@ -533,9 +565,9 @@ function computeConns(markers){
     // at any zoom level. STP icon is 46x30px, anchor [23,15]; short sides are
     // the 30px (height) sides, displaced ±23px in the icon's width direction.
     const [A,B]=stpFaces(stp);
-    // stpIn always = short side closest to the IC (foul inlet rule)
-    if(ic){
-      const ic2={lat:ic.lat,lng:ic.lng};
+    // stpIn always = short side closest to the effective IC (foul inlet rule)
+    if(effIc){
+      const ic2={lat:effIc.lat,lng:effIc.lng};
       dist(A,ic2)<dist(B,ic2)?(stpIn=A,stpOut=B):(stpIn=B,stpOut=A);
     } else {
       const ds=pump?{lat:pump.lat,lng:pump.lng}:disc?{lat:disc.lat,lng:disc.lng}:drain?{lat:drain.lat,lng:drain.lng}:null;
@@ -543,7 +575,7 @@ function computeConns(markers){
     }
   }
 
-  if(ic&&stp&&stpIn)out.push({id:'ic-stp',coords:[{lat:ic.lat,lng:ic.lng},stpIn],color:'#92400E',width:3,type:'gravity'});
+  if(effIc&&stp&&stpIn)out.push({id:'ic-stp',coords:[{lat:effIc.lat,lng:effIc.lng},stpIn],color:'#92400E',width:3,type:'gravity'});
   if(stp&&pump&&stpOut)out.push({id:'stp-pump',coords:[stpOut,{lat:pump.lat,lng:pump.lng}],color:'#92400E',width:3,type:'gravity'});
 
   if(pump&&(drain||disc)){
@@ -785,11 +817,19 @@ function addMarker(m){
   m.id=String(++markerCounter);
   placedMarkers.push(m);
   if(hasVio(m)){violatingIds.add(m.id);confirmingId=m.id;updateVioBanner();}
+  // Capture new IC as the promoted STP connection point when user accepted suggestion
+  if(awaitingPromotedIc&&(m.symbolId==='new_inspection_chamber_large'||m.symbolId==='new_inspection_chamber_small')){
+    promotedLastIcId=m.id;
+    awaitingPromotedIc=false;
+    document.getElementById('ic-await-banner').style.display='none';
+  }
   renderMarker(m);
   renderConnections();
   renderPalette();
   updateClearBtn();
   autoSave();
+  // Check if new STP placement warrants suggesting a shorter IC insertion
+  if(m.symbolId==='sewage_treatment_plant') checkStpPlacementSuggestion();
 }
 
 function renderMarker(m){
@@ -858,9 +898,12 @@ function renderMarker(m){
 }
 
 function removeMarker(id){
+  const removedSymbolId=placedMarkers.find(m=>m.id===id)?.symbolId;
   placedMarkers=placedMarkers.filter(m=>m.id!==id);
   violatingIds.delete(id);
   if(confirmingId===id)confirmingId=null;
+  if(promotedLastIcId===id){promotedLastIcId=null;icSuggestionDismissed=false;}
+  if(removedSymbolId==='sewage_treatment_plant'){icSuggestionDismissed=false;awaitingPromotedIc=false;document.getElementById('ic-await-banner').style.display='none';}
   if(footprintLayers[id]){footprintLayers[id].forEach(l=>map.removeLayer(l));delete footprintLayers[id];}
   if(markerLayers[id]){map.removeLayer(markerLayers[id]);delete markerLayers[id];}
   renderConnections();
@@ -1139,6 +1182,29 @@ function showModal(id){
 function hideModal(id){document.getElementById(id).classList.remove('vis');}
 function closeModalBackdrop(e,id){if(e.target===document.getElementById(id))hideModal(id);}
 
+function checkStpPlacementSuggestion(){
+  if(icSuggestionDismissed||promotedLastIcId||awaitingPromotedIc)return;
+  const stp=placedMarkers.find(m=>m.symbolId==='sewage_treatment_plant');
+  const ic=placedMarkers.find(m=>m.symbolId==='last_inspection_chamber');
+  const st=placedMarkers.find(m=>m.symbolId==='existing_septic_tank');
+  if(!stp||!ic||!st)return;
+  if(dist(stp,st)<dist(stp,ic)) showModal('ic-suggest-modal');
+}
+function acceptIcSuggestion(){
+  hideModal('ic-suggest-modal');
+  awaitingPromotedIc=true;
+  document.getElementById('ic-await-banner').style.display='block';
+}
+function dismissIcSuggestion(){
+  hideModal('ic-suggest-modal');
+  icSuggestionDismissed=true;
+}
+function cancelIcAwait(){
+  awaitingPromotedIc=false;
+  document.getElementById('ic-await-banner').style.display='none';
+  icSuggestionDismissed=true;
+}
+
 function setLoading(on,txt){
   const el=document.getElementById('load-overlay');
   el.classList.toggle('vis',on);
@@ -1170,6 +1236,8 @@ function clearAll(){
   });
   placedMarkers=[];violatingIds=new Set();confirmingId=null;
   connectionWaypoints={};bendViolations={};
+  promotedLastIcId=null;awaitingPromotedIc=false;icSuggestionDismissed=false;
+  document.getElementById('ic-await-banner').style.display='none';
   renderConnections();
   updateVioBanner();updateClearBtn();
   autoSave();
