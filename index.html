@@ -144,6 +144,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
       <button class="mctrl" onclick="showModal('leg-modal')">☰ Legend</button>
       <button class="mctrl" id="ps-btn" onclick="showModal('ps-modal')">⚙ Plant Size</button>
       <button class="mctrl" onclick="openMaterials()">📋 Materials</button>
+      <button class="mctrl green" id="add-ic-st-btn" style="display:none" onclick="showModal('ic-st-add-modal')">＋ IC in foul run</button>
       <button class="mctrl red" id="clear-btn" style="display:none" onclick="clearAll()">🗑 Clear</button>
     </div>
 
@@ -225,6 +226,22 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="dim-btns">
       <button class="dim-btn" onclick="cancelDim()">Cancel</button>
       <button class="dim-btn pri" id="dim-confirm-btn" onclick="confirmDim()">Place</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add IC to IC→ST foul run modal -->
+<div class="modal" id="ic-st-add-modal">
+  <div class="modal-sheet center">
+    <div class="modal-handle"></div>
+    <div class="modal-title">Add IC to existing foul run</div>
+    <p style="font-size:13px;color:#aaa;line-height:1.6;margin:0 0 4px">
+      A new IC will be placed at the midpoint of the existing foul pipe run between the last IC and the septic tank.<br><br>
+      Drag it to wherever you need it — the pipe on each side will follow automatically.
+    </p>
+    <div class="dim-btns" style="margin-top:16px">
+      <button class="dim-btn" onclick="hideModal('ic-st-add-modal')">Cancel</button>
+      <button class="dim-btn pri" style="background:#16A34A" onclick="confirmAddIcToIcSt()">Add IC</button>
     </div>
   </div>
 </div>
@@ -1048,6 +1065,11 @@ function renderConnections(){
   }
 
   // Warning banner only shows when user has declined the suggestion (pipe still too long)
+  // Show the "Add IC to foul run" button whenever the IC→ST pipe exists
+  const hasIcSt=placedMarkers.some(m=>m.symbolId==='last_inspection_chamber')&&
+                placedMarkers.some(m=>m.symbolId==='existing_septic_tank');
+  document.getElementById('add-ic-st-btn').style.display=hasIcSt?'flex':'none';
+
   document.getElementById('grav-banner').classList.toggle('vis',hasLong&&gravSuggestDeclined);
   if(hasLong&&suggestPositions.length&&!gravSuggestShown){
     // Don't show gravity IC suggestion while the user is still answering the
@@ -1244,11 +1266,36 @@ function dismissGravSuggest(){
   // Warning banner will now show via the hasLong && gravSuggestDeclined check
   document.getElementById('grav-banner').classList.add('vis');
 }
-function showGravIcBanner(){
+function showGravIcBanner(msg){
   const b=document.getElementById('grav-ic-banner');
+  b.textContent=msg||'✓ ICs added — drag any of them to fine-tune their position';
   b.classList.add('vis');
   clearTimeout(gravIcBannerTimer);
   gravIcBannerTimer=setTimeout(()=>b.classList.remove('vis'),7000);
+}
+function confirmAddIcToIcSt(){
+  hideModal('ic-st-add-modal');
+  const ic=placedMarkers.find(m=>m.symbolId==='last_inspection_chamber');
+  const st=placedMarkers.find(m=>m.symbolId==='existing_septic_tank');
+  if(!ic||!st)return;
+  // Find the midpoint along the current ic-st path (may have been split by earlier ICs)
+  // Fall back to geographic midpoint between the two markers
+  const path=connectionWaypoints['ic-st']??[{lat:ic.lat,lng:ic.lng},{lat:st.lat,lng:st.lng}];
+  let total=0;
+  for(let i=0;i<path.length-1;i++)total+=dist(path[i],path[i+1]);
+  const half=total/2;
+  let d=0;
+  for(let i=0;i<path.length-1;i++){
+    const sl=dist(path[i],path[i+1]);
+    if(d+sl>=half){
+      const t=(half-d)/sl;
+      const pt={lat:path[i].lat+t*(path[i+1].lat-path[i].lat),lng:path[i].lng+t*(path[i+1].lng-path[i].lng)};
+      addMarker({lat:pt.lat,lng:pt.lng,symbolId:'new_inspection_chamber_small'});
+      showGravIcBanner('✓ New IC added — drag it to your preferred position');
+      return;
+    }
+    d+=sl;
+  }
 }
 function batchAddMarkers(ms){
   for(const m of ms){
