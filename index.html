@@ -453,6 +453,72 @@ function drainFace(m, target){
   const best=faces.reduce((b,f)=>(f[0]-tc.x)**2+(f[1]-tc.y)**2<(b[0]-tc.x)**2+(b[1]-tc.y)**2?f:b);
   return map.containerPointToLatLng(best);
 }
+const SNAP_PX=20;
+
+function icEdgePt(ic,towardPt){
+  const ip=map.latLngToContainerPoint([ic.lat,ic.lng]);
+  const tp=map.latLngToContainerPoint([towardPt.lat,towardPt.lng]);
+  const dx=tp.x-ip.x,dy=tp.y-ip.y,len=Math.hypot(dx,dy);
+  if(len<1)return{lat:ic.lat,lng:ic.lng};
+  const r=17;
+  return map.containerPointToLatLng([ip.x+(dx/len)*r,ip.y+(dy/len)*r]);
+}
+
+function pxSegDist(p,a,b){
+  const dx=b.x-a.x,dy=b.y-a.y,lsq=dx*dx+dy*dy;
+  if(lsq<0.01)return Math.hypot(p.x-a.x,p.y-a.y);
+  const t=Math.max(0,Math.min(1,((p.x-a.x)*dx+(p.y-a.y)*dy)/lsq));
+  return Math.hypot(p.x-(a.x+t*dx),p.y-(a.y+t*dy));
+}
+
+function applyIcSnaps(baseConns){
+  const ics=placedMarkers.filter(m=>
+    m.symbolId==='new_inspection_chamber_large'||
+    m.symbolId==='new_inspection_chamber_small'
+  );
+  if(!ics.length)return baseConns;
+  const conns=[...baseConns];
+  for(const ic of ics){
+    const icPx=map.latLngToContainerPoint([ic.lat,ic.lng]);
+    for(let ci=0;ci<conns.length;ci++){
+      const c=conns[ci];
+      if(c.type!=='gravity')continue;
+      // Skip connections that already terminate at this IC
+      const startId=c.id.split('-')[0];
+      if(c.id.includes(`-sn-${ic.id}-`))continue;
+      const path=connectionWaypoints[c.id]??c.coords;
+      // Don't split if IC is one of the endpoints
+      const ep0=map.latLngToContainerPoint([path[0].lat,path[0].lng]);
+      const epN=map.latLngToContainerPoint([path[path.length-1].lat,path[path.length-1].lng]);
+      if(Math.hypot(icPx.x-ep0.x,icPx.y-ep0.y)<SNAP_PX)continue;
+      if(Math.hypot(icPx.x-epN.x,icPx.y-epN.y)<SNAP_PX)continue;
+      let minDist=Infinity,splitIdx=0;
+      for(let i=0;i<path.length-1;i++){
+        const aPx=map.latLngToContainerPoint([path[i].lat,path[i].lng]);
+        const bPx=map.latLngToContainerPoint([path[i+1].lat,path[i+1].lng]);
+        const d=pxSegDist(icPx,aPx,bPx);
+        if(d<minDist){minDist=d;splitIdx=i;}
+      }
+      if(minDist>SNAP_PX)continue;
+      const beforePts=path.slice(0,splitIdx+1);
+      const afterPts=path.slice(splitIdx+1);
+      const eIn=icEdgePt(ic,beforePts[beforePts.length-1]);
+      const eOut=icEdgePt(ic,afterPts.length?afterPts[0]:path[path.length-1]);
+      const id1=`${c.id}-sn-${ic.id}-a`;
+      const id2=`${c.id}-sn-${ic.id}-b`;
+      if(!connectionWaypoints[id1])connectionWaypoints[id1]=[...beforePts,eIn];
+      if(!connectionWaypoints[id2])connectionWaypoints[id2]=[eOut,...afterPts];
+      conns.splice(ci,1,
+        {id:id1,coords:[path[0],eIn],color:c.color,width:c.width,type:c.type},
+        {id:id2,coords:[eOut,path[path.length-1]],color:c.color,width:c.width,type:c.type}
+      );
+      ci++;
+      break;
+    }
+  }
+  return conns;
+}
+
 function computeConns(markers){
   const get=id=>markers.find(m=>m.symbolId===id);
   const stp=get('sewage_treatment_plant'),ic=get('last_inspection_chamber');
@@ -820,7 +886,8 @@ function renderConnections(){
   Object.keys(connDots).forEach(k=>delete connDots[k]);
   suggestCircles=[];
 
-  const conns=computeConns(placedMarkers);
+  const baseConns=computeConns(placedMarkers);
+  const conns=applyIcSnaps(baseConns);
 
   // Sync waypoints
   const nw={};
@@ -1229,7 +1296,7 @@ function computeMaterials() {
   // Use connectionWaypoints (kept in sync by renderConnections) so lengths
   // always match exactly what is drawn on screen. Fall back to computeConns
   // only for the connection type, which is not stored in connectionWaypoints.
-  const conns = computeConns(placedMarkers);
+  const conns = applyIcSnaps(computeConns(placedMarkers));
   const typeMap = Object.fromEntries(conns.map(c=>[c.id,c.type]));
   for (const [id, path] of Object.entries(connectionWaypoints)) {
     if (!path || path.length < 2) continue;
