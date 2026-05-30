@@ -400,6 +400,11 @@ const connDots = {};        // connId -> [L.marker]
 let suggestCircles = [];
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
+// Compass bearing in degrees (0° = north, CW) from point `a` to point `b`.
+function bearingDeg(a,b){
+  const cl=Math.cos(a.lat*Math.PI/180);
+  return Math.atan2((b.lng-a.lng)*cl, b.lat-a.lat)*180/Math.PI;
+}
 function dist(a,b){
   const cl=Math.cos(((a.lat+b.lat)/2*Math.PI)/180);
   return Math.sqrt(((a.lat-b.lat)*111000)**2+((a.lng-b.lng)*111000*cl)**2);
@@ -878,6 +883,23 @@ function parseGeo(g){
 // ── Markers ───────────────────────────────────────────────────────────────────
 function addMarker(m){
   m.id=String(++markerCounter);
+  // Auto-orient on placement so the correct face points toward its reference marker.
+  // Rotation is in CSS degrees (CW from up = north).
+  if(m.rotation==null){
+    const lastIc=placedMarkers.find(mm=>mm.symbolId==='last_inspection_chamber');
+    const pump=placedMarkers.find(mm=>mm.symbolId==='pumping_station');
+    if((m.symbolId==='sewage_treatment_plant'||m.symbolId==='existing_septic_tank')&&lastIc){
+      // ST/STP icon: 46×30px — short sides are the 30px left/right faces.
+      // At 0° they face E (bearing 90°). To face bearing θ: rotation = θ − 90.
+      m.rotation=bearingDeg(m,lastIc)-90;
+    }else if(m.symbolId==='drainage_field'&&pump){
+      // Drain field icon: 28×55px — short sides are the 28px top/bottom faces.
+      // At 0° they face N (bearing 0°). To face bearing θ: rotation = θ.
+      // Exception: if actual width > depth the short sides are E/W, so rotation = θ − 90.
+      const {width,depth}=effDims(m,SYM.drainage_field);
+      m.rotation=width>depth?bearingDeg(m,pump)-90:bearingDeg(m,pump);
+    }
+  }
   placedMarkers.push(m);
   if(hasVio(m)){violatingIds.add(m.id);confirmingId=m.id;updateVioBanner();}
   renderMarker(m);
