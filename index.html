@@ -477,7 +477,7 @@ function computeConns(markers){
   }
 
   if(ic&&stp&&stpIn)out.push({id:'ic-stp',coords:[{lat:ic.lat,lng:ic.lng},stpIn],color:'#92400E',width:3,type:'gravity'});
-  if(stp&&pump&&stpOut)out.push({id:'stp-pump',coords:[stpOut,{lat:pump.lat,lng:pump.lng}],color:'#2563EB',width:3,type:'pressure'});
+  if(stp&&pump&&stpOut)out.push({id:'stp-pump',coords:[stpOut,{lat:pump.lat,lng:pump.lng}],color:'#92400E',width:3,type:'gravity'});
 
   if(pump&&(drain||disc)){
     const pc={lat:pump.lat,lng:pump.lng};
