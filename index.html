@@ -458,6 +458,7 @@ function computeConns(markers){
   const stp=get('sewage_treatment_plant'),ic=get('last_inspection_chamber');
   const pump=get('pumping_station'),drain=get('drainage_field');
   const disc=get('discharge_point'),kiosk=get('kiosk'),elec=get('electrical_point');
+  const st=get('existing_septic_tank');
   const out=[];
   let stpIn=null,stpOut=null;
 
@@ -495,6 +496,13 @@ function computeConns(markers){
     const kN={lat:kiosk.lat+hd,lng:kiosk.lng},kS={lat:kiosk.lat-hd,lng:kiosk.lng};
     const front=dist(kN,ref)<dist(kS,ref)?kN:kS;
     out.push({id:'kiosk-elec',coords:[front,{lat:elec.lat,lng:elec.lng}],color:'#111827',width:2.5,dashed:true,type:'cable'});
+  }
+  // IC → existing septic tank (same rule as IC → STP: nearest short side)
+  if(ic&&st){
+    const [A,B]=stpFaces(st); // septic tank has same 46×30px icon as STP
+    const ic2={lat:ic.lat,lng:ic.lng};
+    const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
+    out.push({id:'ic-st',coords:[ic2,stIn],color:'#92400E',width:3,type:'gravity'});
   }
   return out;
 }
