@@ -359,9 +359,10 @@ function rotatedRectCoords(c,wM,dM,deg){
   ];
   return corners.map(p=>rotatePoint(p,c,deg)).map(p=>[p.lat,p.lng]);
 }
-function nearFace(c,wM,dM,t){
+function nearFace(c,wM,dM,t,rot){
   const cl=Math.cos(c.lat*Math.PI/180),hd=(dM/2)/111000,hw=(wM/2)/(111000*cl);
-  const faces=[{lat:c.lat+hd,lng:c.lng},{lat:c.lat-hd,lng:c.lng},{lat:c.lat,lng:c.lng+hw},{lat:c.lat,lng:c.lng-hw}];
+  const raw=[{lat:c.lat+hd,lng:c.lng},{lat:c.lat-hd,lng:c.lng},{lat:c.lat,lng:c.lng+hw},{lat:c.lat,lng:c.lng-hw}];
+  const faces=rot?raw.map(f=>rotatePoint(f,c,rot)):raw;
   return faces.reduce((b,f)=>dist(f,t)<dist(b,t)?f:b);
 }
 function interpPts(a,b,sp){
@@ -457,11 +458,11 @@ function computeConns(markers){
 
   if(pump&&(drain||disc)){
     const pc={lat:pump.lat,lng:pump.lng};
-    const dest=disc?{lat:disc.lat,lng:disc.lng}:nearFace({lat:drain.lat,lng:drain.lng},...Object.values(effDims(drain,SYM.drainage_field)),pc);
+    const dest=disc?{lat:disc.lat,lng:disc.lng}:nearFace({lat:drain.lat,lng:drain.lng},...Object.values(effDims(drain,SYM.drainage_field)),pc,drain.rotation||0);
     out.push({id:'pump-dest',coords:[pc,dest],color:'#2563EB',width:3,type:'pressure'});
   }
   if(stp&&!pump&&stpOut&&(drain||disc)){
-    const dest=disc?{lat:disc.lat,lng:disc.lng}:nearFace({lat:drain.lat,lng:drain.lng},...Object.values(effDims(drain,SYM.drainage_field)),stpOut);
+    const dest=disc?{lat:disc.lat,lng:disc.lng}:nearFace({lat:drain.lat,lng:drain.lng},...Object.values(effDims(drain,SYM.drainage_field)),stpOut,drain.rotation||0);
     out.push({id:'stp-dest',coords:[stpOut,dest],color:'#92400E',width:3,type:'gravity'});
   }
   if(kiosk&&elec){
@@ -1175,7 +1176,10 @@ function computeMaterials() {
   let gravLen = 0, presLen = 0, cableLen = 0;
   const conns = computeConns(placedMarkers);
   for (const c of conns) {
-    const path = connectionWaypoints[c.id] ?? c.coords;
+    // Always use fresh endpoints from computeConns; preserve any user-dragged middle waypoints
+    const s = c.coords[0], e = c.coords[c.coords.length - 1];
+    const saved = connectionWaypoints[c.id];
+    const path = saved ? [s, ...saved.slice(1, -1), e] : c.coords;
     let len = 0;
     for (let i = 0; i < path.length - 1; i++) len += dist(path[i], path[i + 1]);
     if (c.type === 'gravity') gravLen += len;
