@@ -54,6 +54,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 .pal-row{display:flex}
 .pal-item{width:70px;display:flex;flex-direction:column;align-items:center;padding:6px 4px;border-radius:10px;border:2px solid transparent;gap:4px;cursor:pointer;margin-right:6px;background:#2c2c2e;-webkit-tap-highlight-color:transparent;flex-shrink:0}
 .pal-item.sel{border-color:var(--c);background:color-mix(in srgb,var(--c) 18%,transparent)}
+.pal-item.used{opacity:.35;cursor:not-allowed;pointer-events:none}
 .pal-ico{width:38px;height:38px;border-radius:19px;display:flex;align-items:center;justify-content:center;font-size:15px;color:#fff;font-weight:700}
 .pal-ico.sm{width:28px;height:28px;border-radius:14px;font-size:11px}
 .pal-name{font-size:10px;font-weight:600;text-align:center;line-height:1.3;color:#fff}
@@ -618,6 +619,7 @@ map.on('click',e=>{
   if(!selectedSymbolId)return;
   const {lat,lng}=e.latlng;
   const sym=SYM[selectedSymbolId];
+  if(SINGLE_INSTANCE.has(sym.id)&&placedMarkers.some(m=>m.symbolId===sym.id))return;
 
   if(sym.id==='sewage_treatment_plant'&&selectedPlantPE!==null){
     const ps=PLANT_SIZES.find(p=>p.pe===selectedPlantPE);
@@ -686,6 +688,7 @@ function addMarker(m){
   if(hasVio(m)){violatingIds.add(m.id);confirmingId=m.id;updateVioBanner();}
   renderMarker(m);
   renderConnections();
+  renderPalette();
   updateClearBtn();
   autoSave();
 }
@@ -762,6 +765,7 @@ function removeMarker(id){
   if(footprintLayers[id]){footprintLayers[id].forEach(l=>map.removeLayer(l));delete footprintLayers[id];}
   if(markerLayers[id]){map.removeLayer(markerLayers[id]);delete markerLayers[id];}
   renderConnections();
+  renderPalette();
   updateVioBanner();
   updateClearBtn();
   autoSave();
@@ -981,13 +985,17 @@ function renderLegend(){
 }
 
 // ── Palette ───────────────────────────────────────────────────────────────────
+const SINGLE_INSTANCE=new Set(['sewage_treatment_plant','drainage_field']);
+
 function renderPalette(){
+  const placedIds=new Set(placedMarkers.map(m=>m.symbolId));
   ['existing','new'].forEach(cat=>{
     const row=document.getElementById(`pal-${cat}`);
     row.innerHTML='';
     SYMBOLS.filter(s=>s.category===cat).forEach(s=>{
+      const isUsed=SINGLE_INSTANCE.has(s.id)&&placedIds.has(s.id);
       const item=document.createElement('div');
-      item.className='pal-item'+(selectedSymbolId===s.id?' sel':'');
+      item.className='pal-item'+(selectedSymbolId===s.id?' sel':'')+(isUsed?' used':'');
       item.style.setProperty('--c',s.color);
       let iconHtml='';
       if(s.id==='sewage_treatment_plant'){
