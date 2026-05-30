@@ -846,12 +846,14 @@ function addMarker(m){
     document.getElementById('ic-await-banner').style.display='none';
   }
   renderMarker(m);
+  // STP suggestion must fire BEFORE renderConnections so the modal is already
+  // visible when the gravity check runs — that lets us suppress the gravity
+  // modal until the user has answered the STP question first.
+  if(m.symbolId==='sewage_treatment_plant') checkStpPlacementSuggestion();
   renderConnections();
   renderPalette();
   updateClearBtn();
   autoSave();
-  // Check if new STP placement warrants suggesting a shorter IC insertion
-  if(m.symbolId==='sewage_treatment_plant') checkStpPlacementSuggestion();
 }
 
 function renderMarker(m){
@@ -1048,8 +1050,13 @@ function renderConnections(){
   // Warning banner only shows when user has declined the suggestion (pipe still too long)
   document.getElementById('grav-banner').classList.toggle('vis',hasLong&&gravSuggestDeclined);
   if(hasLong&&suggestPositions.length&&!gravSuggestShown){
-    gravSuggestShown=true;
-    setTimeout(()=>showModal('grav-suggest-modal'),250);
+    // Don't show gravity IC suggestion while the user is still answering the
+    // STP/IC insertion question, or is in the process of placing the new IC.
+    const icSuggestActive=document.getElementById('ic-suggest-modal').classList.contains('vis')||awaitingPromotedIc;
+    if(!icSuggestActive){
+      gravSuggestShown=true;
+      setTimeout(()=>showModal('grav-suggest-modal'),250);
+    }
   }
   if(!hasLong){gravSuggestShown=false;gravSuggestDeclined=false;}
 }
@@ -1273,6 +1280,9 @@ function acceptIcSuggestion(){
 function dismissIcSuggestion(){
   hideModal('ic-suggest-modal');
   icSuggestionDismissed=true;
+  // Now that the STP question is answered, allow the gravity check to fire
+  gravSuggestShown=false;
+  renderConnections();
 }
 function cancelIcAwait(){
   awaitingPromotedIc=false;
