@@ -39,6 +39,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 .banner.vis{display:flex}
 #vio-banner{bottom:12px;background:#DC2626;cursor:pointer}
 #grav-banner{bottom:58px;background:#B45309}
+#grav-ic-banner{bottom:104px;background:#14532d;border:1.5px solid #16A34A;cursor:default}
 
 #load-overlay{position:absolute;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
 #load-overlay.vis{display:flex}
@@ -150,6 +151,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div id="plant-badge">⚙ <span id="plant-badge-text"></span></div>
 
     <div class="banner" id="grav-banner">⚠ Gravity pipe exceeds 45 m — add a small IC at least every 22 m</div>
+    <div class="banner" id="grav-ic-banner" style="color:#86efac">✓ ICs added — drag any of them to fine-tune their position</div>
     <div class="banner" id="ic-await-banner" style="background:#14532d;border-color:#16A34A;color:#86efac;cursor:default;display:none">
       ✅ Place a new IC on the existing foul run between the septic tank and the last IC — it will become the STP connection point
       <button onclick="cancelIcAwait()" style="float:right;background:none;border:none;color:#86efac;font-size:16px;cursor:pointer;margin-left:8px">✕</button>
@@ -223,6 +225,22 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="dim-btns">
       <button class="dim-btn" onclick="cancelDim()">Cancel</button>
       <button class="dim-btn pri" id="dim-confirm-btn" onclick="confirmDim()">Place</button>
+    </div>
+  </div>
+</div>
+
+<!-- Gravity pipe IC suggestion modal -->
+<div class="modal" id="grav-suggest-modal">
+  <div class="modal-sheet center">
+    <div class="modal-handle"></div>
+    <div class="modal-title">⚠ Gravity pipe too long</div>
+    <p style="font-size:13px;color:#aaa;line-height:1.6;margin:0 0 4px">
+      This pipe run exceeds 45 m. Suggested IC positions are marked with <strong style="color:#16A34A">?</strong> on the map at every 22 m.<br><br>
+      Would you like to add new ICs at those positions? You can drag them anywhere afterwards and the pipe will follow.
+    </p>
+    <div class="dim-btns" style="margin-top:16px">
+      <button class="dim-btn" onclick="dismissGravSuggest()">No — keep as is</button>
+      <button class="dim-btn pri" style="background:#16A34A" onclick="acceptGravSuggest()">Yes — add ICs</button>
     </div>
   </div>
 </div>
@@ -355,6 +373,10 @@ let markerCounter = 0;
 let promotedLastIcId = null;   // marker.id of new IC that acts as STP connection point
 let awaitingPromotedIc = false; // true while user is about to place the new IC
 let icSuggestionDismissed = false; // suppress re-prompt after user clicks No
+let suggestPositions = [];     // [{lat,lng}] pending gravity-pipe IC suggestion positions
+let gravSuggestShown = false;  // modal has fired for current long-pipe state
+let gravSuggestDeclined = false; // user said No — suppress "?" markers until pipe is fixed
+let gravIcBannerTimer = null;  // auto-dismiss timer for the "ICs added" banner
 
 // ── Leaflet layers ────────────────────────────────────────────────────────────
 let map, boundaryLayer = null;
@@ -928,6 +950,7 @@ function renderConnections(){
   Object.keys(connLines).forEach(k=>delete connLines[k]);
   Object.keys(connDots).forEach(k=>delete connDots[k]);
   suggestCircles=[];
+  suggestPositions=[];
 
   const baseConns=computeConns(placedMarkers);
   const conns=applyIcSnaps(baseConns);
@@ -995,28 +1018,40 @@ function renderConnections(){
     }
     connDots[c.id]=dots;
 
-    // 45m check & suggestion circles
+    // 45m check — place "?" IC suggestion markers every 22m
     if(c.type==='gravity'){
       let total=0;
       for(let i=0;i<path.length-1;i++)total+=dist(path[i],path[i+1]);
       if(total>45){
         hasLong=true;
-        let d=0,next=22;
-        for(let i=0;i<path.length-1;i++){
-          const a=path[i],b=path[i+1],sl=dist(a,b);
-          while(next<=d+sl){
-            const t=(next-d)/sl;
-            const pt={lat:a.lat+t*(b.lat-a.lat),lng:a.lng+t*(b.lng-a.lng)};
-            suggestCircles.push(L.circle([pt.lat,pt.lng],{radius:.5,color:'#B45309',weight:2,fillColor:'#B45309',fillOpacity:.25}).addTo(map));
-            next+=22;
+        if(!gravSuggestDeclined){
+          let d=0,next=22;
+          for(let i=0;i<path.length-1;i++){
+            const a=path[i],b=path[i+1],sl=dist(a,b);
+            while(next<=d+sl){
+              const t=(next-d)/sl;
+              const pt={lat:a.lat+t*(b.lat-a.lat),lng:a.lng+t*(b.lng-a.lng)};
+              const qIcon=L.divIcon({className:'',
+                html:`<div style="width:30px;height:30px;border-radius:50%;background:#16A34A;border:2.5px dashed rgba(255,255,255,0.8);box-shadow:0 2px 6px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:17px;font-weight:800;line-height:1">?</div>`,
+                iconSize:[30,30],iconAnchor:[15,15]});
+              suggestCircles.push(L.marker([pt.lat,pt.lng],{icon:qIcon,interactive:false,pane:'dotPane'}).addTo(map));
+              suggestPositions.push({lat:pt.lat,lng:pt.lng});
+              next+=22;
+            }
+            d+=sl;
           }
-          d+=sl;
         }
       }
     }
   }
 
-  document.getElementById('grav-banner').classList.toggle('vis',hasLong);
+  // Warning banner only shows when user has declined the suggestion (pipe still too long)
+  document.getElementById('grav-banner').classList.toggle('vis',hasLong&&gravSuggestDeclined);
+  if(hasLong&&suggestPositions.length&&!gravSuggestShown){
+    gravSuggestShown=true;
+    setTimeout(()=>showModal('grav-suggest-modal'),250);
+  }
+  if(!hasLong){gravSuggestShown=false;gravSuggestDeclined=false;}
 }
 
 // ── Pin HTML ──────────────────────────────────────────────────────────────────
@@ -1182,6 +1217,46 @@ function showModal(id){
 function hideModal(id){document.getElementById(id).classList.remove('vis');}
 function closeModalBackdrop(e,id){if(e.target===document.getElementById(id))hideModal(id);}
 
+function acceptGravSuggest(){
+  hideModal('grav-suggest-modal');
+  const positions=[...suggestPositions];
+  // Clear suggestion markers immediately
+  suggestCircles.forEach(c=>map.removeLayer(c));
+  suggestCircles=[];suggestPositions=[];
+  gravSuggestShown=false;gravSuggestDeclined=false;
+  if(positions.length){
+    batchAddMarkers(positions.map(p=>({lat:p.lat,lng:p.lng,symbolId:'new_inspection_chamber_small'})));
+    showGravIcBanner();
+  }
+}
+function dismissGravSuggest(){
+  hideModal('grav-suggest-modal');
+  suggestCircles.forEach(c=>map.removeLayer(c));
+  suggestCircles=[];suggestPositions=[];
+  gravSuggestDeclined=true;
+  // Warning banner will now show via the hasLong && gravSuggestDeclined check
+  document.getElementById('grav-banner').classList.add('vis');
+}
+function showGravIcBanner(){
+  const b=document.getElementById('grav-ic-banner');
+  b.classList.add('vis');
+  clearTimeout(gravIcBannerTimer);
+  gravIcBannerTimer=setTimeout(()=>b.classList.remove('vis'),7000);
+}
+function batchAddMarkers(ms){
+  for(const m of ms){
+    m.id=String(++markerCounter);
+    placedMarkers.push(m);
+    if(hasVio(m)){violatingIds.add(m.id);confirmingId=m.id;}
+    renderMarker(m);
+  }
+  updateVioBanner();
+  renderConnections();
+  renderPalette();
+  updateClearBtn();
+  autoSave();
+}
+
 function checkStpPlacementSuggestion(){
   if(icSuggestionDismissed||promotedLastIcId||awaitingPromotedIc)return;
   const stp=placedMarkers.find(m=>m.symbolId==='sewage_treatment_plant');
@@ -1237,6 +1312,7 @@ function clearAll(){
   placedMarkers=[];violatingIds=new Set();confirmingId=null;
   connectionWaypoints={};bendViolations={};
   promotedLastIcId=null;awaitingPromotedIc=false;icSuggestionDismissed=false;
+  suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;
   document.getElementById('ic-await-banner').style.display='none';
   renderConnections();
   updateVioBanner();updateClearBtn();
