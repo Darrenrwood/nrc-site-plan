@@ -435,6 +435,24 @@ function stpFaces(m){
     map.containerPointToLatLng([pc.x-dx,pc.y-dy])
   ];
 }
+// Return the nearest icon face-midpoint of the drainage field to `target`.
+// Icon is 28x55px, anchor [14,27]. Four face-midpoints computed in screen-pixel
+// space (with rotation) then converted back to lat/lng.
+function drainFace(m, target){
+  const rot=(m.rotation||0)*Math.PI/180;
+  const c=Math.cos(rot), s=Math.sin(rot);
+  const pc=map.latLngToContainerPoint([m.lat,m.lng]);
+  const tc=map.latLngToContainerPoint([target.lat,target.lng]);
+  const hw=14, hh=27; // half icon dimensions in px
+  const faces=[
+    [pc.x+hw*c,  pc.y+hw*s],   // right
+    [pc.x-hw*c,  pc.y-hw*s],   // left
+    [pc.x-hh*s,  pc.y+hh*c],   // bottom
+    [pc.x+hh*s,  pc.y-hh*c],   // top
+  ];
+  const best=faces.reduce((b,f)=>(f[0]-tc.x)**2+(f[1]-tc.y)**2<(b[0]-tc.x)**2+(b[1]-tc.y)**2?f:b);
+  return map.containerPointToLatLng(best);
+}
 function computeConns(markers){
   const get=id=>markers.find(m=>m.symbolId===id);
   const stp=get('sewage_treatment_plant'),ic=get('last_inspection_chamber');
@@ -463,11 +481,11 @@ function computeConns(markers){
 
   if(pump&&(drain||disc)){
     const pc={lat:pump.lat,lng:pump.lng};
-    const dest=disc?{lat:disc.lat,lng:disc.lng}:nearFace({lat:drain.lat,lng:drain.lng},...Object.values(effDims(drain,SYM.drainage_field)),pc,drain.rotation||0);
+    const dest=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,pc);
     out.push({id:'pump-dest',coords:[pc,dest],color:'#2563EB',width:3,type:'pressure'});
   }
   if(stp&&!pump&&stpOut&&(drain||disc)){
-    const dest=disc?{lat:disc.lat,lng:disc.lng}:nearFace({lat:drain.lat,lng:drain.lng},...Object.values(effDims(drain,SYM.drainage_field)),stpOut,drain.rotation||0);
+    const dest=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,stpOut);
     out.push({id:'stp-dest',coords:[stpOut,dest],color:'#92400E',width:3,type:'gravity'});
   }
   if(kiosk&&elec){
