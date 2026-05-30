@@ -222,7 +222,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 <script>
 // ── Constants ───────────────────────────────────────────────────────────────
 const SYMBOLS = [
-  {id:'existing_septic_tank',label:'Septic Tank (Existing)',shortLabel:'Septic Tank',category:'existing',color:'#78716C',dims:{type:'rectangle',width:2.4,depth:1.2}},
+  {id:'existing_septic_tank',label:'Septic Tank (Existing)',shortLabel:'Septic Tank',category:'existing',color:'#78716C',dims:{type:'rectangle',width:2.4,depth:1.2,userDefined:true}},
   {id:'last_inspection_chamber',label:'Last Inspection Chamber',shortLabel:'Last IC',category:'existing',color:'#DC2626',dims:{type:'circle',radius:0.3}},
   {id:'new_inspection_chamber_large',label:'New IC (600mm)',shortLabel:'New IC 600',category:'new',color:'#16A34A',dims:{type:'circle',radius:0.3}},
   {id:'new_inspection_chamber_small',label:'New IC (300mm)',shortLabel:'New IC 300',category:'new',color:'#16A34A',dims:{type:'circle',radius:0.15},small:true},
@@ -704,7 +704,7 @@ function renderMarker(m){
   // (ICs, pump station) use the pin itself as the visual representation.
   const showFootprint=!['last_inspection_chamber','new_inspection_chamber_large',
     'new_inspection_chamber_small','pumping_station','kiosk','discharge_point','electrical_point',
-    'sewage_treatment_plant','drainage_field'].includes(sym.id);
+    'sewage_treatment_plant','drainage_field','existing_septic_tank'].includes(sym.id);
   if(sym.dims&&showFootprint){
     if(sym.dims.type==='circle'){
       const r=effRad(m,sym);
@@ -727,7 +727,7 @@ function renderMarker(m){
   footprintLayers[m.id]=fp;
 
   let iSize,iAnchor;
-  if(sym.id==='sewage_treatment_plant'){iSize=[46,30];iAnchor=[23,15];}
+  if(sym.id==='sewage_treatment_plant'||sym.id==='existing_septic_tank'){iSize=[46,30];iAnchor=[23,15];}
   else if(sym.id==='drainage_field'){iSize=[28,55];iAnchor=[14,27];}
   else if(sym.id==='kiosk'){iSize=[42,32];iAnchor=[21,16];}
   else if(sym.small){iSize=[26,26];iAnchor=[13,13];}
@@ -746,7 +746,7 @@ function renderMarker(m){
   });
   mk.on('click',e=>{
     L.DomEvent.stopPropagation(e);
-    const rotatable=sym.id==='sewage_treatment_plant'||sym.id==='drainage_field';
+    const rotatable=sym.id==='sewage_treatment_plant'||sym.id==='drainage_field'||sym.id==='existing_septic_tank';
     if(rotatable){showRotHandle(m);}
     else{if(confirm(`Remove ${sym.label}?`))removeMarker(m.id);}
   });
@@ -873,6 +873,10 @@ function pinHtml(sym,isVio,rot){
     return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:space-evenly;padding:0 4px;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}">
       <div style="width:14px;height:14px;border-radius:50%;background:${sym.color};border:1.5px solid #fff"></div>
       <div style="width:14px;height:14px;border-radius:50%;background:${sym.color};border:1.5px solid #fff"></div></div>`;
+  }
+  if(sym.id==='existing_septic_tank'){
+    return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}">
+      <div style="background:${sym.color};border-radius:3px;padding:2px 7px;color:#fff;font-size:12px;font-weight:700;letter-spacing:-0.5px">ST</div></div>`;
   }
   if(sym.id==='drainage_field'){
     const c=isVio?'#DC2626':'#4D7C0F';
