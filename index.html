@@ -614,6 +614,35 @@ function _inAnyBuilding(lat,lng){
   return buildingPolygons.some(ring=>_inPolyM(pt,ring.map(p=>_ll2m(p,o))));
 }
 
+// True if any part of marker m's footprint (centre + all rotated corners, or
+// sampled perimeter for circular footprints) falls inside a building polygon.
+function _markerOverlapsBuilding(m){
+  if(!buildingPolygons.length)return false;
+  const sym=SYM[m.symbolId];
+  const pts=[{lat:m.lat,lng:m.lng}]; // always check centre
+  if(sym&&sym.dims){
+    const c={lat:m.lat,lng:m.lng};
+    const rot=m.rotation||0;
+    if(sym.dims.type==='circle'){
+      const r=effRad(m,sym);
+      const cl=Math.cos(m.lat*Math.PI/180);
+      for(let a=0;a<360;a+=45){
+        const rad=a*Math.PI/180;
+        pts.push({lat:m.lat+r*Math.cos(rad)/111319.9,lng:m.lng+r*Math.sin(rad)/(111319.9*cl)});
+      }
+    } else {
+      const {width,depth}=effDims(m,sym);
+      const la=(depth/2)/111000,lo=(width/2)/(111000*Math.cos(m.lat*Math.PI/180));
+      const corners=[
+        {lat:c.lat+la,lng:c.lng-lo},{lat:c.lat+la,lng:c.lng+lo},
+        {lat:c.lat-la,lng:c.lng+lo},{lat:c.lat-la,lng:c.lng-lo},
+      ];
+      pts.push(...(rot?corners.map(p=>rotatePoint(p,c,rot)):corners));
+    }
+  }
+  return pts.some(p=>_inAnyBuilding(p.lat,p.lng));
+}
+
 // Single Dijkstra pass at a given clearance. Returns lat/lng path or null if no route.
 function _dijkstraRoute(s,e,polys,cl,o){
   const expanded=polys.map(p=>_expandPoly(p,cl+0.2));
@@ -1640,9 +1669,16 @@ function renderMarker(m){
   }
   const icon=L.divIcon({className:'',html:pinHtml(sym,isVio,rot,icLabel),iconSize:iSize,iconAnchor:iAnchor});
   const mk=L.marker([m.lat,m.lng],{icon,draggable:true,zIndexOffset:100}).addTo(map);
+  mk.on('dragstart',()=>{m._preDragLat=m.lat;m._preDragLng=m.lng;});
   mk.on('dragend',e=>{
     const {lat,lng}=e.target.getLatLng();
     m.lat=lat;m.lng=lng;
+    if(_markerOverlapsBuilding(m)){
+      m.lat=m._preDragLat;m.lng=m._preDragLng;
+      e.target.setLatLng([m.lat,m.lng]);
+      renderMarker(m);renderConnections();
+      return;
+    }
     if(hasVio(m)){violatingIds.add(m.id);confirmingId=m.id;}
     else{violatingIds.delete(m.id);if(confirmingId===m.id)confirmingId=null;}
     updateVioBanner();
