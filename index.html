@@ -143,6 +143,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 
     <div id="map-ctrls">
       <button class="mctrl" id="layer-btn" onclick="toggleLayer()">🗺 Map</button>
+      <button class="mctrl" id="draw-btn" onclick="toggleDrawBoundary()">✏ Boundary</button>
+      <button class="mctrl green" id="draw-done-btn" style="display:none" onclick="confirmDrawBoundary()">✓ Close (0 pts)</button>
       <button class="mctrl" onclick="showModal('leg-modal')">☰ Legend</button>
       <button class="mctrl" id="ps-btn" onclick="showModal('ps-modal')">⚙ Plant Size</button>
       <button class="mctrl" onclick="openMaterials()">📋 Materials</button>
@@ -414,6 +416,9 @@ let connectionWaypoints = {};
 let bendViolations = {};
 let dimensionPending = null; // {lat,lng,symbol}
 let stpPlacePending = null;  // {lat,lng} — coords held while PE picker is open
+let drawingBoundary = false;
+let drawPoints = [];         // {lat,lng} vertices being drawn
+let drawTempLayer = null;
 let markerCounter = 0;
 let promotedLastIcId = null;   // marker.id of new IC that acts as STP connection point
 let icSuggestionDismissed = false; // suppress re-prompt after user clicks No
@@ -982,6 +987,7 @@ function toggleLayer(){
 }
 
 map.on('click',e=>{
+  if(drawingBoundary){addDrawPoint(e.latlng.lat,e.latlng.lng);return;}
   if(!selectedSymbolId)return;
   const {lat,lng}=e.latlng;
   const sym=SYM[selectedSymbolId];
@@ -998,6 +1004,73 @@ map.on('click',e=>{
   }
   addMarker({lat,lng,symbolId:sym.id});
 });
+
+// ── Manual boundary draw ──────────────────────────────────────────────────────
+function toggleDrawBoundary(){
+  if(drawingBoundary) cancelDrawBoundary(); else startDrawBoundary();
+}
+function startDrawBoundary(){
+  drawingBoundary=true;
+  drawPoints=[];
+  if(drawTempLayer){map.removeLayer(drawTempLayer);}
+  drawTempLayer=L.layerGroup().addTo(map);
+  document.getElementById('draw-btn').textContent='✕ Cancel';
+  document.getElementById('draw-btn').classList.add('red');
+  document.getElementById('draw-done-btn').style.display='flex';
+  map.getContainer().style.cursor='crosshair';
+  selectedSymbolId=null; renderPalette();
+}
+function cancelDrawBoundary(){
+  drawingBoundary=false;
+  drawPoints=[];
+  if(drawTempLayer){map.removeLayer(drawTempLayer);drawTempLayer=null;}
+  document.getElementById('draw-btn').textContent='✏ Boundary';
+  document.getElementById('draw-btn').classList.remove('red');
+  document.getElementById('draw-done-btn').style.display='none';
+  map.getContainer().style.cursor='';
+}
+function addDrawPoint(lat,lng){
+  drawPoints.push({lat,lng});
+  _updateDrawLayer();
+}
+function _updateDrawLayer(){
+  drawTempLayer.clearLayers();
+  const n=drawPoints.length;
+  if(n===0)return;
+  // Closing preview polygon (dashed)
+  if(n>=2){
+    const pts=[...drawPoints,drawPoints[0]].map(p=>[p.lat,p.lng]);
+    L.polyline(pts,{color:'#E11D48',weight:2,dashArray:'7 5',pane:'connPane'}).addTo(drawTempLayer);
+  }
+  // Vertex dots
+  drawPoints.forEach((pt,i)=>{
+    L.circleMarker([pt.lat,pt.lng],{radius:i===0?7:5,color:'#E11D48',fillColor:i===0?'#E11D48':'#fff',fillOpacity:1,weight:2,interactive:false}).addTo(drawTempLayer);
+  });
+  // Update done button label
+  const btn=document.getElementById('draw-done-btn');
+  btn.textContent=n>=3?`✓ Close (${n} pts)`:`✓ Need ${3-n} more`;
+  btn.disabled=n<3;
+  btn.style.opacity=n<3?'0.5':'1';
+}
+function confirmDrawBoundary(){
+  if(drawPoints.length<3)return;
+  const newRings=[[...drawPoints]];
+  cancelDrawBoundary();
+  // Apply boundary — same post-processing as doLoad
+  if(boundaryLayer){map.removeLayer(boundaryLayer);boundaryLayer=null;}
+  if(buildingLayerGroup){map.removeLayer(buildingLayerGroup);buildingLayerGroup=null;}
+  buildingPolygons=[];
+  rings=newRings;
+  const poly=L.polygon(rings.map(r=>r.map(c=>[c.lat,c.lng])),
+    {color:'#E11D48',weight:2.5,fillColor:'#E11D48',fillOpacity:0.08}).addTo(map);
+  boundaryLayer=poly;
+  document.getElementById('title-badge-text').textContent='Manual boundary';
+  document.getElementById('title-badge').classList.add('vis');
+  recheckViolations();
+  autoSave();
+  cacheTilesForBoundary(rings);
+  fetchBuildings(rings);
+}
 
 // ── INSPIRE fetch ─────────────────────────────────────────────────────────────
 async function doLoad(){
