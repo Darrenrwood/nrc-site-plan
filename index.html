@@ -146,6 +146,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
       <button class="mctrl" id="layer-btn" onclick="toggleLayer()">🗺 Map</button>
       <button class="mctrl" id="draw-btn" onclick="toggleDrawBoundary()">✏ Boundary</button>
       <button class="mctrl green" id="draw-done-btn" style="display:none" onclick="confirmDrawBoundary()">✓ Close (0 pts)</button>
+      <button class="mctrl" id="add-bld-btn" onclick="toggleDrawBuilding()">🏠 Add Building</button>
+      <button class="mctrl green" id="add-bld-done-btn" style="display:none" onclick="confirmDrawBuilding()">✓ Close (0 pts)</button>
       <button class="mctrl" onclick="showModal('leg-modal')">☰ Legend</button>
       <button class="mctrl" id="ps-btn" onclick="showModal('ps-modal')">⚙ Plant Size</button>
       <button class="mctrl" onclick="openMaterials()">📋 Materials</button>
@@ -438,6 +440,9 @@ let dimensionPending = null; // {lat,lng,symbol}
 let stpPlacePending = null;       // {lat,lng} — coords held while PE picker is open
 let drainFieldPlacePending = null; // {lat,lng} — coords held while drain field PE picker is open
 let drawingBoundary = false;
+let drawingBuilding = false;
+let drawBuildingPoints = [];
+let drawBuildingTempLayer = null;
 let midwayPickMode = false;
 let midwaySnapPt = null;     // snapped {lat,lng} on the existing pipe
 let midwayPreviewDot = null; // temporary L.circleMarker shown after snap
@@ -1268,6 +1273,7 @@ function toggleLayer(){
 
 map.on('click',e=>{
   if(drawingBoundary){addDrawPoint(e.latlng.lat,e.latlng.lng);return;}
+  if(drawingBuilding){addDrawBuildingPoint(e.latlng.lat,e.latlng.lng);return;}
   if(midwayPickMode){_handleMidwayTap(e.latlng.lat,e.latlng.lng);return;}
   if(!selectedSymbolId)return;
   const {lat,lng}=e.latlng;
@@ -1366,6 +1372,56 @@ function confirmDrawBoundary(){
   autoSave();
   cacheTilesForBoundary(rings);
   fetchBuildings(rings);
+}
+
+// ── Manual building draw ──────────────────────────────────────────────────────
+function toggleDrawBuilding(){
+  if(drawingBuilding) cancelDrawBuilding(); else startDrawBuilding();
+}
+function startDrawBuilding(){
+  drawingBuilding=true;
+  drawBuildingPoints=[];
+  if(drawBuildingTempLayer){map.removeLayer(drawBuildingTempLayer);}
+  drawBuildingTempLayer=L.layerGroup().addTo(map);
+  document.getElementById('add-bld-btn').textContent='✕ Cancel';
+  document.getElementById('add-bld-btn').classList.add('red');
+  document.getElementById('add-bld-done-btn').style.display='none';
+}
+function cancelDrawBuilding(){
+  drawingBuilding=false;
+  drawBuildingPoints=[];
+  if(drawBuildingTempLayer){map.removeLayer(drawBuildingTempLayer);drawBuildingTempLayer=null;}
+  document.getElementById('add-bld-btn').textContent='🏠 Add Building';
+  document.getElementById('add-bld-btn').classList.remove('red');
+  document.getElementById('add-bld-done-btn').style.display='none';
+}
+function addDrawBuildingPoint(lat,lng){
+  drawBuildingPoints.push({lat,lng});
+  _updateDrawBuildingPreview();
+}
+function _updateDrawBuildingPreview(){
+  drawBuildingTempLayer.clearLayers();
+  const n=drawBuildingPoints.length;
+  if(n>=2){
+    const pts=[...drawBuildingPoints,drawBuildingPoints[0]].map(p=>[p.lat,p.lng]);
+    L.polyline(pts,{color:'#F59E0B',weight:2,dashArray:'7 5',pane:'connPane'}).addTo(drawBuildingTempLayer);
+  }
+  drawBuildingPoints.forEach((pt,i)=>{
+    L.circleMarker([pt.lat,pt.lng],{radius:i===0?7:5,color:'#F59E0B',fillColor:i===0?'#F59E0B':'#fff',fillOpacity:1,weight:2,interactive:false}).addTo(drawBuildingTempLayer);
+  });
+  const btn=document.getElementById('add-bld-done-btn');
+  btn.textContent=`✓ Close (${n} pts)`;
+  btn.style.display=n>=3?'flex':'none';
+}
+function confirmDrawBuilding(){
+  if(drawBuildingPoints.length<3)return;
+  const newRing=[...drawBuildingPoints];
+  cancelDrawBuilding();
+  buildingPolygons.push(newRing);
+  renderBuildings();
+  recheckViolations();
+  renderConnections();
+  autoSave();
 }
 
 // ── INSPIRE fetch ─────────────────────────────────────────────────────────────
