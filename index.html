@@ -1000,6 +1000,18 @@ function removeMarker(id){
   if(removedSymbolId==='sewage_treatment_plant'){icSuggestionDismissed=false;}
   if(footprintLayers[id]){footprintLayers[id].forEach(l=>map.removeLayer(l));delete footprintLayers[id];}
   if(markerLayers[id]){map.removeLayer(markerLayers[id]);delete markerLayers[id];}
+  // Cascade: remove new ICs whose pipe run no longer exists after this deletion
+  const remainingConns=computeConns(placedMarkers);
+  const remainingConnIds=new Set(remainingConns.map(c=>c.id));
+  for(const [icId,att] of Object.entries(icAttachments)){
+    if(!remainingConnIds.has(att.connId)){
+      placedMarkers=placedMarkers.filter(m=>m.id!==icId);
+      violatingIds.delete(icId);
+      if(footprintLayers[icId]){footprintLayers[icId].forEach(l=>map.removeLayer(l));delete footprintLayers[icId];}
+      if(markerLayers[icId]){map.removeLayer(markerLayers[icId]);delete markerLayers[icId];}
+      delete icAttachments[icId];
+    }
+  }
   renderConnections();
   renderPalette();
   updateVioBanner();
