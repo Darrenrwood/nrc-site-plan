@@ -609,7 +609,11 @@ function _routeAroundBuildings(startLL,endLL){
     for(let v=0;v<n;v++){
       if(vis[v])continue;
       const a=nodes[u],b=nodes[v];
-      if(polys.some(p=>_segBlocked(a,b,p,PIPE_BLDG_CLEAR)))continue;
+      // Endpoint edges (touching start=0 or end=1): only block if the segment
+      // actually crosses through a building — the pipe face may sit within the
+      // clearance margin against a wall, and that's fine.
+      const cl=(u===0||u===1||v===0||v===1)?0:PIPE_BLDG_CLEAR;
+      if(polys.some(p=>_segBlocked(a,b,p,cl)))continue;
       const d=dists[u]+Math.hypot(b.x-a.x,b.y-a.y);
       if(d<dists[v]){dists[v]=d;prev[v]=u;}
     }
