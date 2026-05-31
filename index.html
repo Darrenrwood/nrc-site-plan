@@ -521,7 +521,8 @@ function deflAngle(a,b,c){
 }
 
 // ── Building-aware pipe routing ──────────────────────────────────────────────
-const PIPE_BLDG_CLEAR  = 1.0;  // metres — auto-routed foul pipes stay this far from building edges
+const PIPE_BLDG_CLEAR_PREF = 2.0;  // preferred metres clearance from building edges
+const PIPE_BLDG_CLEAR_MIN  = 0.5;  // minimum fallback when 2 m route is impossible
 const FOUL_BEND_MAX_DEG = 30;  // a 300mm IC is placed wherever a foul pipe turns more than this
 
 // Local metric coordinate helpers (equirectangular, centred on `o`)
@@ -583,17 +584,9 @@ function _inAnyBuilding(lat,lng){
   return buildingPolygons.some(ring=>_inPolyM(pt,ring.map(p=>_ll2m(p,o))));
 }
 
-// Route from startLL to endLL in lat/lng, avoiding buildings by PIPE_BLDG_CLEAR metres.
-// Returns an array of {lat,lng} including start and end.
-// Falls back to direct path if no buildings or no route found.
-function _routeAroundBuildings(startLL,endLL){
-  if(!buildingPolygons.length)return[startLL,endLL];
-  const o=startLL;
-  const s=_ll2m(startLL,o),e=_ll2m(endLL,o);
-  const polys=buildingPolygons.map(ring=>ring.map(p=>_ll2m(p,o)));
-  if(!polys.some(p=>_segBlocked(s,e,p,PIPE_BLDG_CLEAR)))return[startLL,endLL];
-  // Visibility-graph nodes: start, end, vertices of each building expanded by clearance + margin
-  const expanded=polys.map(p=>_expandPoly(p,PIPE_BLDG_CLEAR+0.2));
+// Single Dijkstra pass at a given clearance. Returns lat/lng path or null if no route.
+function _dijkstraRoute(s,e,polys,cl,o){
+  const expanded=polys.map(p=>_expandPoly(p,cl+0.2));
   const nodes=[s,e];
   for(const ep of expanded)for(const v of ep)nodes.push(v);
   const n=nodes.length;
@@ -609,19 +602,34 @@ function _routeAroundBuildings(startLL,endLL){
     for(let v=0;v<n;v++){
       if(vis[v])continue;
       const a=nodes[u],b=nodes[v];
-      // Endpoint edges (touching start=0 or end=1): only block if the segment
-      // actually crosses through a building — the pipe face may sit within the
-      // clearance margin against a wall, and that's fine.
-      const cl=(u===0||u===1||v===0||v===1)?0:PIPE_BLDG_CLEAR;
-      if(polys.some(p=>_segBlocked(a,b,p,cl)))continue;
+      // Endpoint edges (touching start=0 or end=1): only block if the segment actually
+      // crosses through a building — a pipe face against a wall is within the clearance
+      // zone but hasn't penetrated the building, so allow it.
+      const edgeCl=(u===0||u===1||v===0||v===1)?0:cl;
+      if(polys.some(p=>_segBlocked(a,b,p,edgeCl)))continue;
       const d=dists[u]+Math.hypot(b.x-a.x,b.y-a.y);
       if(d<dists[v]){dists[v]=d;prev[v]=u;}
     }
   }
-  if(dists[1]===Infinity)return[startLL,endLL];
+  if(dists[1]===Infinity)return null;
   const path=[];
   for(let c=1;c>=0;c=prev[c]){path.unshift(nodes[c]);if(c===0)break;}
   return path.map(pt=>_m2ll(pt,o));
+}
+
+// Route from startLL to endLL in lat/lng, avoiding buildings.
+// Tries 2 m clearance first; falls back to 500 mm if no route can be found at 2 m.
+function _routeAroundBuildings(startLL,endLL){
+  if(!buildingPolygons.length)return[startLL,endLL];
+  const o=startLL;
+  const s=_ll2m(startLL,o),e=_ll2m(endLL,o);
+  const polys=buildingPolygons.map(ring=>ring.map(p=>_ll2m(p,o)));
+  for(const cl of[PIPE_BLDG_CLEAR_PREF,PIPE_BLDG_CLEAR_MIN]){
+    if(!polys.some(p=>_segBlocked(s,e,p,cl)))return[startLL,endLL]; // direct path is clear at this tier
+    const result=_dijkstraRoute(s,e,polys,cl,o);
+    if(result)return result;
+  }
+  return[startLL,endLL]; // straight-line fallback (both tiers exhausted)
 }
 
 // Actual angle-change at vertex b in degrees (0 = straight, 90 = right-angle)
