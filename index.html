@@ -655,7 +655,6 @@ function computeConns(markers){
       }
       const next=remaining.splice(best,1)[0];
       const e0=icEdgePt(prev,next),e1=icEdgePt(next,prev);
-      console.log('[eic] adding pipe',prev.id,'→',next.id,'coords',e0,e1);
       out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity'});
       prev=next;
     }
@@ -666,7 +665,6 @@ function computeConns(markers){
       out.push({id:`eic-${prev.id}-st`,coords:[icEdgePt(prev,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
     }
   }
-  console.log('[computeConns] total connections:', out.length, out.map(c=>c.id));
   return out;
 }
 
@@ -1660,38 +1658,6 @@ map.on('click', hideRotHandle);
 
 // Allow Enter key in search box
 document.getElementById('title-input').addEventListener('keydown',e=>{if(e.key==='Enter')doLoad();});
-
-// ── On-screen error logger (debug) ────────────────────────────────────────────
-(function(){
-  const box=document.createElement('div');
-  box.id='err-log';
-  Object.assign(box.style,{
-    position:'fixed',bottom:'60px',left:'8px',right:'8px',maxHeight:'30vh',
-    overflowY:'auto',background:'rgba(0,0,0,.85)',color:'#FF453A',
-    fontSize:'11px',fontFamily:'monospace',padding:'6px 8px',
-    borderRadius:'8px',zIndex:'9999',display:'none',
-    whiteSpace:'pre-wrap',wordBreak:'break-all',lineHeight:'1.4'
-  });
-  document.body.appendChild(box);
-  function log(kind,msg){
-    box.style.display='block';
-    box.textContent+='['+kind+'] '+msg+'\n';
-    box.scrollTop=box.scrollHeight;
-  }
-  window.addEventListener('error',ev=>{
-    log('ERR',ev.message+'\n  '+ev.filename+':'+ev.lineno+':'+ev.colno);
-  });
-  window.addEventListener('unhandledrejection',ev=>{
-    log('PROMISE',ev.reason);
-  });
-  // Intercept console.log so [eic] debug lines also appear on screen
-  const _log=console.log.bind(console);
-  console.log=function(...a){
-    _log(...a);
-    const s=a.map(x=>typeof x==='object'?JSON.stringify(x):x).join(' ');
-    if(s.startsWith('[eic]')||s.startsWith('[computeConns]'))log('DBG',s);
-  };
-})();
 </script>
 </body>
 </html>
