@@ -504,6 +504,16 @@ function stpFaces(m){
     map.containerPointToLatLng([pc.x-dx,pc.y-dy])
   ];
 }
+// Return the nearest face-midpoint of the kiosk icon (42×32px) to `towardPt`.
+// Picks the closest of 4 axis-aligned face centres in pixel space.
+function kioskFace(kiosk,towardPt){
+  const pc=map.latLngToContainerPoint([kiosk.lat,kiosk.lng]);
+  const tp=map.latLngToContainerPoint([towardPt.lat,towardPt.lng]);
+  const faces=[[pc.x,pc.y-16],[pc.x,pc.y+16],[pc.x-21,pc.y],[pc.x+21,pc.y]];
+  let best=faces[0],bestD=Infinity;
+  for(const f of faces){const d=Math.hypot(f[0]-tp.x,f[1]-tp.y);if(d<bestD){bestD=d;best=f;}}
+  return map.containerPointToLatLng(best);
+}
 // Return the nearest icon face-midpoint of the drainage field to `target`.
 // Icon is 28x55px, anchor [14,27]. Four face-midpoints computed in screen-pixel
 // space (with rotation) then converted back to lat/lng.
@@ -627,12 +637,9 @@ function computeConns(markers){
     out.push({id:'stp-dest',coords:[stpOut,destEnd],color:'#92400E',width:3,type:'gravity'});
   }
   if(kiosk&&elec){
-    const ref=stp?{lat:stp.lat,lng:stp.lng}:{lat:elec.lat,lng:elec.lng};
-    const {depth:kd}=effDims(kiosk,SYM.kiosk);
-    const hd=(kd/2)/111000;
-    const kN={lat:kiosk.lat+hd,lng:kiosk.lng},kS={lat:kiosk.lat-hd,lng:kiosk.lng};
-    const front=dist(kN,ref)<dist(kS,ref)?kN:kS;
-    out.push({id:'kiosk-elec',coords:[front,{lat:elec.lat,lng:elec.lng}],color:'#111827',width:2.5,dashed:true,type:'cable'});
+    const kFace=kioskFace(kiosk,elec);
+    const eFace=icEdgePt(elec,kiosk);
+    out.push({id:'kiosk-elec',coords:[kFace,eFace],color:'#111827',width:2.5,dashed:true,type:'cable'});
   }
   // Existing ICs chained together, connecting lastIC → existIC1 → … → lastExistIC → ST.
   // The direct ic→st connection is only used when there are NO existing ICs in the chain.
