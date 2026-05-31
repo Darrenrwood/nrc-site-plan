@@ -574,11 +574,35 @@ function _segBlocked(a,b,poly,cl){
   return false;
 }
 
-// Outward-expand each polygon vertex from centroid by `d` metres (good for convex buildings)
+// Outward-expand each polygon vertex by `d` metres using a proper miter join
+// (parallel edge offset). Each vertex is moved perpendicular to both adjacent
+// edges so the CLOSEST point of the expanded polygon to any building edge is
+// exactly `d` metres — unlike centroid expansion which under-expands elongated
+// buildings and leaves nodes inside the clearance zone.
 function _expandPoly(poly,d){
-  const cx=poly.reduce((s,v)=>s+v.x,0)/poly.length;
-  const cy=poly.reduce((s,v)=>s+v.y,0)/poly.length;
-  return poly.map(v=>{const dx=v.x-cx,dy=v.y-cy,len=Math.hypot(dx,dy)||1;return{x:v.x+dx/len*d,y:v.y+dy/len*d};});
+  const n=poly.length;
+  if(n<3)return poly;
+  // Determine winding: positive signed area = CCW.
+  let area=0;
+  for(let i=0;i<n;i++){const j=(i+1)%n;area+=poly[i].x*poly[j].y-poly[j].x*poly[i].y;}
+  const sign=area>=0?1:-1; // CCW→+1 means outward normal is (dy,-dx)
+  const result=[];
+  for(let i=0;i<n;i++){
+    const prev=poly[(i-1+n)%n],curr=poly[i],next=poly[(i+1)%n];
+    // Outward unit normals for the two edges meeting at this vertex
+    const e1x=curr.x-prev.x,e1y=curr.y-prev.y,l1=Math.hypot(e1x,e1y)||1;
+    const e2x=next.x-curr.x,e2y=next.y-curr.y,l2=Math.hypot(e2x,e2y)||1;
+    const n1x=sign*e1y/l1,n1y=-sign*e1x/l1;
+    const n2x=sign*e2y/l2,n2y=-sign*e2x/l2;
+    // Bisector of the two normals
+    const bx=n1x+n2x,by=n1y+n2y,bl=Math.hypot(bx,by)||1;
+    const bisX=bx/bl,bisY=by/bl;
+    // Scale so perpendicular distance to each adjacent edge is exactly d
+    const dot=bisX*n1x+bisY*n1y;
+    const scale=dot>0.1?d/dot:d*2; // cap miter for very acute angles
+    result.push({x:curr.x+bisX*scale,y:curr.y+bisY*scale});
+  }
+  return result;
 }
 
 // True if lat/lng falls inside any loaded building polygon
