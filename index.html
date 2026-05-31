@@ -1794,11 +1794,9 @@ function renderConnections(zoomOnly=false){
     // gravity pipes stay as straight segments (required for deflection accuracy)
     const renderPts=(c.type==='pressure'||c.type==='cable')&&path.length>=2
       ?catmullRom(path):path;
+    if(c.routingFailed)continue; // no line drawn — banner already tells the user
     const lls=renderPts.map(p=>[p.lat,p.lng]);
-    const lineColor=c.routingFailed?'#DC2626':c.color;
-    const lineDash=c.routingFailed?'10 6':c.dashed?'8 6':null;
-    const lineWeight=c.routingFailed?(c.width+1):c.width;
-    const line=L.polyline(lls,{color:lineColor,weight:lineWeight,dashArray:lineDash,pane:'connPane'}).addTo(map);
+    const line=L.polyline(lls,{color:c.color,weight:c.width,dashArray:c.dashed?'8 6':null,pane:'connPane'}).addTo(map);
     connLines[c.id]=line;
 
     // Control dots — not shown on existing infrastructure pipes
