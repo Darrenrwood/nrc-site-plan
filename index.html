@@ -348,6 +348,7 @@ function autoSave() {
       markerCounter,
       promotedLastIcId,
       stpTargetIcId,
+      buildingPolygons,
     }));
   } catch(_) {}
 }
@@ -374,6 +375,7 @@ function autoLoad() {
       const flat = rings.flat();
       map.fitBounds(L.latLngBounds(flat.map(c=>[c.lat,c.lng])),{padding:[40,40],maxZoom:21});
     }
+    if (s.buildingPolygons?.length) { buildingPolygons = s.buildingPolygons; renderBuildings(); }
     if (s.badgeText) {
       document.getElementById('title-badge-text').textContent = s.badgeText;
       if (s.badgeVis) document.getElementById('title-badge').classList.add('vis');
@@ -995,7 +997,8 @@ async function doLoad(){
     document.getElementById('title-badge').classList.add('vis');
     recheckViolations();
     autoSave();
-    cacheTilesForBoundary(rings); // background — no await
+    cacheTilesForBoundary(rings);  // background — no await
+    fetchBuildings(rings);          // background — no await
   }catch(e){
     const msg=e.message.includes('Failed to fetch')||e.message.includes('NetworkError')
       ?'Network error — check internet connection and try again.'
