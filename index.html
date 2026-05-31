@@ -142,6 +142,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div id="map"></div>
 
     <div id="map-ctrls">
+      <button class="mctrl" id="layer-btn" onclick="toggleLayer()">🗺 Map</button>
       <button class="mctrl" onclick="showModal('leg-modal')">☰ Legend</button>
       <button class="mctrl" id="ps-btn" onclick="showModal('ps-modal')">⚙ Plant Size</button>
       <button class="mctrl" onclick="openMaterials()">📋 Materials</button>
@@ -389,6 +390,7 @@ function autoLoad() {
 
 // ── State ────────────────────────────────────────────────────────────────────
 let rings = null;
+let buildingPolygons = []; // [{lat,lng}] rings fetched from Overpass
 let placedMarkers = [];
 let selectedSymbolId = null;
 let selectedPlantPE = null;
@@ -410,7 +412,7 @@ let stpTargetIcId = null;      // IC the STP foul inlet connects to (null = defa
 let pendingStpIcCb = null;     // callback waiting for stp-ic-modal answer
 
 // ── Leaflet layers ────────────────────────────────────────────────────────────
-let map, boundaryLayer = null;
+let map, boundaryLayer = null, buildingLayerGroup = null;
 const footprintLayers = {}; // markerId -> array of L.layer
 const markerLayers = {};    // markerId -> L.marker
 const connLines = {};       // connId -> L.polyline
@@ -480,13 +482,30 @@ function distToBoundary(p,rgs){
   for(const r of rgs)for(let i=0;i<r.length;i++){const d=distToSeg(p,r[i],r[(i+1)%r.length]);if(d<mn)mn=d;}
   return mn;
 }
+function distToBuildings(p){
+  let mn=Infinity;
+  for(const ring of buildingPolygons)for(let i=0;i<ring.length;i++){const d=distToSeg(p,ring[i],ring[(i+1)%ring.length]);if(d<mn)mn=d;}
+  return mn;
+}
+function renderBuildings(){
+  if(buildingLayerGroup){map.removeLayer(buildingLayerGroup);buildingLayerGroup=null;}
+  if(!buildingPolygons.length)return;
+  buildingLayerGroup=L.layerGroup();
+  for(const ring of buildingPolygons){
+    L.polygon(ring.map(p=>[p.lat,p.lng]),{color:'#F59E0B',weight:1.5,fillColor:'#F59E0B',fillOpacity:0.18,interactive:false}).addTo(buildingLayerGroup);
+  }
+  buildingLayerGroup.addTo(map);
+}
 function effDims(m,s){return{width:m.customWidth??s.dims?.width??1,depth:m.customDepth??s.dims?.depth??1};}
 function effRad(m,s){return m.customRadius??s.dims?.radius??0.5;}
 function hasVio(m){
   if(!rings)return false;
   const r=CLEARANCES[m.symbolId];
-  if(!r||r.boundary<=0)return false;
-  return distToBoundary({lat:m.lat,lng:m.lng},rings)<r.boundary;
+  if(!r)return false;
+  const p={lat:m.lat,lng:m.lng};
+  if(r.boundary>0&&distToBoundary(p,rings)<r.boundary)return true;
+  if(r.building>0&&buildingPolygons.length&&distToBuildings(p)<r.building)return true;
+  return false;
 }
 
 // Catmull-Rom spline through waypoints — smooth arcs for pressure/cable pipes
@@ -733,7 +752,7 @@ let _tileDb = null;
 async function _getDb() {
   if (_tileDb) return _tileDb;
   return new Promise((res, rej) => {
-    const r = indexedDB.open('nrc-tiles-v1', 1);
+    const r = indexedDB.open('nrc-tiles-v2', 1);
     r.onupgradeneeded = e => e.target.result.createObjectStore('tiles');
     r.onsuccess = e => { _tileDb = e.target.result; res(_tileDb); };
     r.onerror = () => rej(new Error('IndexedDB unavailable'));
@@ -760,11 +779,13 @@ async function _dbPut(key, val) {
   } catch(_) {}
 }
 
-// Custom Leaflet tile layer: serves from IndexedDB when cached, live otherwise
+// Custom Leaflet tile layer: serves from IndexedDB when cached, live otherwise.
+// options.keyPrefix distinguishes tile sources in the cache ('sat' or 'osm').
 const OfflineTileLayer = L.TileLayer.extend({
   createTile(coords, done) {
     const img = document.createElement('img');
-    const key = `${coords.z}/${coords.x}/${coords.y}`;
+    const prefix = this.options.keyPrefix || 'sat';
+    const key = `${prefix}/${coords.z}/${coords.x}/${coords.y}`;
     _dbGet(key).then(cached => {
       if (cached) { img.src = cached; done(null, img); return; }
       img.crossOrigin = '';
@@ -806,7 +827,8 @@ function _showCacheBar(done, total) {
 }
 
 // Pre-cache all tiles covering the boundary bbox + CACHE_BUFFER_M buffer
-const _ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const SAT_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const OSM_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 const CACHE_BUFFER_M = 200; // metres of context beyond the boundary edge
 const CACHE_ZOOMS = [14, 15, 16, 17, 18, 19, 20, 21];
 
@@ -821,14 +843,19 @@ async function cacheTilesForBoundary(rings) {
   const dLng = CACHE_BUFFER_M / (111000 * Math.cos(midLat * Math.PI / 180));
   const bbox = { n: maxLat + dLat, s: minLat - dLat, w: minLng - dLng, e: maxLng + dLng };
 
-  // Build full tile list across all cache zoom levels
+  // Build tile list for both satellite and OSM across all cache zoom levels
+  const SOURCES = [
+    { prefix: 'sat', url: SAT_URL },
+    { prefix: 'osm', url: OSM_URL },
+  ];
   const tiles = [];
   for (const z of CACHE_ZOOMS) {
     const nw = _toTileXY(bbox.n, bbox.w, z);
     const se = _toTileXY(bbox.s, bbox.e, z);
     for (let x = nw.x; x <= se.x; x++)
       for (let y = nw.y; y <= se.y; y++)
-        tiles.push({ z, x, y });
+        for (const src of SOURCES)
+          tiles.push({ z, x, y, prefix: src.prefix, url: src.url });
   }
 
   let done = 0;
@@ -839,12 +866,12 @@ async function cacheTilesForBoundary(rings) {
   let idx = 0;
   async function worker() {
     while (idx < tiles.length) {
-      const { z, x, y } = tiles[idx++];
-      const key = `${z}/${x}/${y}`;
+      const { z, x, y, prefix, url } = tiles[idx++];
+      const key = `${prefix}/${z}/${x}/${y}`;
       if (await _dbGet(key)) { _showCacheBar(++done, tiles.length); continue; }
       try {
-        const url = _ESRI.replace('{z}',z).replace('{y}',y).replace('{x}',x);
-        const resp = await fetch(url, { mode: 'cors' });
+        const tileUrl = url.replace('{z}',z).replace('{y}',y).replace('{x}',x);
+        const resp = await fetch(tileUrl, { mode: 'cors' });
         if (resp.ok) {
           const blob = await resp.blob();
           await new Promise(res => {
@@ -860,14 +887,64 @@ async function cacheTilesForBoundary(rings) {
   await Promise.all(Array.from({ length: CONC }, worker));
 }
 
+// Fetch OSM building footprints within the boundary bbox via Overpass API.
+// Results are drawn as amber polygons and wired into hasVio for building clearance checks.
+async function fetchBuildings(rings){
+  if(!navigator.onLine)return;
+  try{
+    const flat=rings.flat();
+    const lats=flat.map(p=>p.lat),lngs=flat.map(p=>p.lng);
+    const midLat=(Math.min(...lats)+Math.max(...lats))/2;
+    const buf=50/111000; // 50 m lat buffer — building checks need much less than tile cache
+    const bufLng=50/(111000*Math.cos(midLat*Math.PI/180));
+    const s=(Math.min(...lats)-buf).toFixed(7);
+    const w=(Math.min(...lngs)-bufLng).toFixed(7);
+    const n=(Math.max(...lats)+buf).toFixed(7);
+    const e=(Math.max(...lngs)+bufLng).toFixed(7);
+    const q=`[out:json][timeout:20];(way["building"](${s},${w},${n},${e}););out body;>;out skel qt;`;
+    const resp=await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(q)}`);
+    if(!resp.ok)return;
+    const data=await resp.json();
+    const nodeMap={};
+    for(const el of data.elements)if(el.type==='node')nodeMap[el.id]={lat:el.lat,lng:el.lon};
+    const polys=[];
+    for(const el of data.elements){
+      if(el.type==='way'&&el.nodes){
+        const ring=el.nodes.map(id=>nodeMap[id]).filter(Boolean);
+        if(ring.length>=3)polys.push(ring);
+      }
+    }
+    buildingPolygons=polys;
+    renderBuildings();
+    recheckViolations();
+    autoSave();
+  }catch(_){}
+}
+
 // ── Map init ──────────────────────────────────────────────────────────────────
 map = L.map('map',{zoomControl:true,attributionControl:false}).setView([52.5,-1.5],7);
 // Pipes drawn above marker icons so termination point is visible
 map.createPane('connPane'); map.getPane('connPane').style.zIndex=620;
 map.createPane('dotPane');  map.getPane('dotPane').style.zIndex=640;
-new OfflineTileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  {maxZoom:21,maxNativeZoom:19,attribution:'Esri'}).addTo(map);
+const satLayer = new OfflineTileLayer(SAT_URL,{maxZoom:21,maxNativeZoom:19,keyPrefix:'sat',attribution:'Esri'});
+const osmLayer = new OfflineTileLayer(OSM_URL,{maxZoom:21,maxNativeZoom:19,keyPrefix:'osm',attribution:'© OpenStreetMap contributors'});
+let activeMapLayer = 'sat';
+satLayer.addTo(map); // satellite is the default
 L.control.attribution({position:'bottomright',prefix:''}).addTo(map);
+
+function toggleLayer(){
+  if(activeMapLayer==='sat'){
+    map.removeLayer(satLayer);
+    osmLayer.addTo(map);
+    activeMapLayer='osm';
+    document.getElementById('layer-btn').textContent='🛰 Satellite';
+  } else {
+    map.removeLayer(osmLayer);
+    satLayer.addTo(map);
+    activeMapLayer='sat';
+    document.getElementById('layer-btn').textContent='🗺 Map';
+  }
+}
 
 map.on('click',e=>{
   if(!selectedSymbolId)return;
