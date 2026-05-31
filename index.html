@@ -1512,6 +1512,8 @@ function addMarker(m){
     maybeShowStpIcDialog(()=>{renderConnections();autoSave();});
     return;
   }
+  // Adding a pump removes stp-dest (gravity STP→drain) — delete any ICs on that run
+  if(m.symbolId==='pumping_station') _pruneOrphanedIcs();
   renderConnections();
   renderPalette();
   updateClearBtn();
@@ -1602,6 +1604,22 @@ function renderMarker(m){
   if(rotState&&rotState.marker.id===m.id) _posHandles();
 }
 
+// Remove new ICs whose origin pipe run no longer exists in the current topology.
+// Called after any marker add/remove that can change which connections exist.
+function _pruneOrphanedIcs(){
+  const ids=new Set(computeConns(placedMarkers).map(c=>c.id));
+  for(const [icId,connId] of Object.entries(icOriginConn)){
+    if(!ids.has(connId)){
+      placedMarkers=placedMarkers.filter(m=>m.id!==icId);
+      violatingIds.delete(icId);
+      if(footprintLayers[icId]){footprintLayers[icId].forEach(l=>map.removeLayer(l));delete footprintLayers[icId];}
+      if(markerLayers[icId]){map.removeLayer(markerLayers[icId]);delete markerLayers[icId];}
+      delete icAttachments[icId];
+      delete icOriginConn[icId];
+    }
+  }
+}
+
 function removeMarker(id){
   const removedSymbolId=placedMarkers.find(m=>m.id===id)?.symbolId;
   placedMarkers=placedMarkers.filter(m=>m.id!==id);
@@ -1614,19 +1632,7 @@ function removeMarker(id){
   if(removedSymbolId==='sewage_treatment_plant'){icSuggestionDismissed=false;stpTargetIcId=null;}
   if(footprintLayers[id]){footprintLayers[id].forEach(l=>map.removeLayer(l));delete footprintLayers[id];}
   if(markerLayers[id]){map.removeLayer(markerLayers[id]);delete markerLayers[id];}
-  // Cascade: remove new ICs (including manually-repositioned ones) whose pipe run no longer exists
-  const remainingConns=computeConns(placedMarkers);
-  const remainingConnIds=new Set(remainingConns.map(c=>c.id));
-  for(const [icId,connId] of Object.entries(icOriginConn)){
-    if(!remainingConnIds.has(connId)){
-      placedMarkers=placedMarkers.filter(m=>m.id!==icId);
-      violatingIds.delete(icId);
-      if(footprintLayers[icId]){footprintLayers[icId].forEach(l=>map.removeLayer(l));delete footprintLayers[icId];}
-      if(markerLayers[icId]){map.removeLayer(markerLayers[icId]);delete markerLayers[icId];}
-      delete icAttachments[icId];
-      delete icOriginConn[icId];
-    }
-  }
+  _pruneOrphanedIcs();
   renderConnections();
   renderPalette();
   updateVioBanner();
