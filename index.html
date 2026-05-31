@@ -760,7 +760,7 @@ function applyIcSnaps(baseConns){
     const icPx=map.latLngToContainerPoint([ic.lat,ic.lng]);
     for(let ci=0;ci<conns.length;ci++){
       const c=conns[ci];
-      if(c.type!=='gravity')continue;
+      if(c.type!=='gravity'||c.existing)continue;
       if(c.id.includes(`-sn-${ic.id}-`))continue;
       const path=connectionWaypoints[c.id]??c.coords;
       // Don't split if IC is already an endpoint of this connection
@@ -1763,8 +1763,8 @@ function renderConnections(zoomOnly=false){
     }
     connDots[c.id]=dots;
 
-    // 45m check — place "?" IC suggestion markers every 22m
-    if(c.type==='gravity'){
+    // 45m check — place "?" IC suggestion markers every 22m (proposed pipes only)
+    if(c.type==='gravity' && !c.existing){
       let total=0;
       for(let i=0;i<path.length-1;i++)total+=dist(path[i],path[i+1]);
       if(total>45){
