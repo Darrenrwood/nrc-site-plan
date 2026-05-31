@@ -41,6 +41,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 #vio-banner{bottom:12px;background:#DC2626;cursor:pointer}
 #grav-banner{bottom:58px;background:#B45309}
 #grav-ic-banner{bottom:104px;background:#14532d;border:1.5px solid #16A34A;cursor:default}
+#route-fail-banner{bottom:150px;background:#7C3AED;border:1.5px solid #A78BFA;cursor:default}
 
 #load-overlay{position:absolute;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
 #load-overlay.vis{display:flex}
@@ -160,6 +161,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 
     <div class="banner" id="grav-banner" style="cursor:pointer" onclick="dismissGravBanner()">⚠ Gravity pipe exceeds 45 m — add a small IC at least every 22 m <span style="margin-left:auto;font-size:16px;opacity:.7">×</span></div>
     <div class="banner" id="grav-ic-banner" style="color:#86efac">✓ ICs added — drag any of them to fine-tune their position</div>
+    <div class="banner" id="route-fail-banner" style="color:#DDD6FE">⚠ Pipe can't clear the building — move the STP or IC further away</div>
     <div class="banner" id="vio-banner" onclick="dismissVio()">⚠ <span id="vio-text">Placement is outside recommended parameters — tap to confirm</span></div>
     <div class="banner" id="midway-banner" style="display:none;color:#F59E0B">⊕ Tap the map to set the join point — it will snap to the nearest existing pipe</div>
 
@@ -657,7 +659,17 @@ function _routeAroundBuildings(startLL,endLL){
     const result=_dijkstraRoute(s,e,polys,cl,o);
     if(result)return result;
   }
-  return[startLL,endLL]; // straight-line fallback (both tiers exhausted)
+  // Both routing tiers failed — fall back to straight line.
+  // Tag the array so callers can flag this connection as routing-failed.
+  const fallback=[startLL,endLL];
+  if(polys.some(p=>_segBlocked(s,e,p,0)))fallback._failed=true;
+  return fallback;
+}
+
+// Wrapper that returns {coords, routingFailed} so computeConns can propagate the flag.
+function _routeTagged(startLL,endLL){
+  const coords=_routeAroundBuildings(startLL,endLL);
+  return{coords,routingFailed:!!coords._failed};
 }
 
 // Actual angle-change at vertex b in degrees (0 = straight, 90 = right-angle)
@@ -845,8 +857,8 @@ function applyIcSnaps(baseConns){
       if(!connectionWaypoints[id1])connectionWaypoints[id1]=[...beforePts,eIn];
       if(!connectionWaypoints[id2])connectionWaypoints[id2]=[eOut,...afterPts];
       conns.splice(ci,1,
-        {id:id1,coords:[path[0],eIn],color:c.color,width:c.width,type:c.type},
-        {id:id2,coords:[eOut,path[path.length-1]],color:c.color,width:c.width,type:c.type}
+        {id:id1,coords:[path[0],eIn],color:c.color,width:c.width,type:c.type,routingFailed:c.routingFailed},
+        {id:id2,coords:[eOut,path[path.length-1]],color:c.color,width:c.width,type:c.type,routingFailed:c.routingFailed}
       );
       ci++;break;
     }
@@ -977,8 +989,8 @@ function computeConns(markers){
     }
   }
 
-  if(effIc&&stp&&stpIn)out.push({id:'ic-stp',coords:_routeAroundBuildings(icEdgePt(effIc,stpIn),stpIn),color:'#92400E',width:3,type:'gravity'});
-  if(stp&&pump&&stpOut)out.push({id:'stp-pump',coords:_routeAroundBuildings(stpOut,icEdgePt(pump,stpOut)),color:'#92400E',width:3,type:'gravity'});
+  if(effIc&&stp&&stpIn){const r=_routeTagged(icEdgePt(effIc,stpIn),stpIn);out.push({id:'ic-stp',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});}
+  if(stp&&pump&&stpOut){const r=_routeTagged(stpOut,icEdgePt(pump,stpOut));out.push({id:'stp-pump',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});}
 
   if(pump&&(drain||disc)){
     const pc={lat:pump.lat,lng:pump.lng};
@@ -989,7 +1001,7 @@ function computeConns(markers){
   if(stp&&!pump&&stpOut&&(drain||disc)){
     const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,stpOut);
     const destEnd=disc?icEdgePt(disc,stpOut):destCenter;
-    out.push({id:'stp-dest',coords:_routeAroundBuildings(stpOut,destEnd),color:'#92400E',width:3,type:'gravity'});
+    {const r=_routeTagged(stpOut,destEnd);out.push({id:'stp-dest',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});}
   }
   if(kiosk&&elec){
     const kFace=kioskFace(kiosk,elec);
@@ -1008,7 +1020,7 @@ function computeConns(markers){
     const [A,B]=stpFaces(st);
     const ic2={lat:ic.lat,lng:ic.lng};
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
-    out.push({id:'ic-st',coords:_routeAroundBuildings(icEdgePt(ic,stIn),stIn),color:'#92400E',width:3,type:'gravity',existing:true});
+    {const r=_routeTagged(icEdgePt(ic,stIn),stIn);out.push({id:'ic-st',coords:r.coords,color:'#92400E',width:3,type:'gravity',existing:true,routingFailed:r.routingFailed});}
   }
   if(existIcs.length){
     const remaining=[...existIcs];
@@ -1022,7 +1034,7 @@ function computeConns(markers){
       }
       const next=remaining.splice(best,1)[0];
       const e0=icEdgePt(prev,next),e1=icEdgePt(next,prev);
-      out.push({id:`eic-${prev.id}-${next.id}`,coords:_routeAroundBuildings(e0,e1),color:'#92400E',width:3,type:'gravity',existing:true});
+      {const r=_routeTagged(e0,e1);out.push({id:`eic-${prev.id}-${next.id}`,coords:r.coords,color:'#92400E',width:3,type:'gravity',existing:true,routingFailed:r.routingFailed});}
       prev=next;
     }
   }
@@ -1783,7 +1795,10 @@ function renderConnections(zoomOnly=false){
     const renderPts=(c.type==='pressure'||c.type==='cable')&&path.length>=2
       ?catmullRom(path):path;
     const lls=renderPts.map(p=>[p.lat,p.lng]);
-    const line=L.polyline(lls,{color:c.color,weight:c.width,dashArray:c.dashed?'8 6':null,pane:'connPane'}).addTo(map);
+    const lineColor=c.routingFailed?'#DC2626':c.color;
+    const lineDash=c.routingFailed?'10 6':c.dashed?'8 6':null;
+    const lineWeight=c.routingFailed?(c.width+1):c.width;
+    const line=L.polyline(lls,{color:lineColor,weight:lineWeight,dashArray:lineDash,pane:'connPane'}).addTo(map);
     connLines[c.id]=line;
 
     // Control dots — not shown on existing infrastructure pipes
@@ -1877,6 +1892,9 @@ function renderConnections(zoomOnly=false){
   const hasIcSt=placedMarkers.some(m=>m.symbolId==='last_inspection_chamber')&&
                 placedMarkers.some(m=>m.symbolId==='existing_septic_tank');
   document.getElementById('add-ic-st-btn').style.display=hasIcSt?'flex':'none';
+
+  const hasRoutingFail=conns.some(c=>c.routingFailed);
+  document.getElementById('route-fail-banner').classList.toggle('vis',hasRoutingFail);
 
   document.getElementById('grav-banner').classList.toggle('vis',hasLong&&gravSuggestDeclined&&!gravBannerDismissed);
   if(hasLong&&suggestPositions.length&&!gravSuggestShown){
