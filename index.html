@@ -382,6 +382,7 @@ function autoSave() {
       promotedLastIcId,
       stpTargetIcId,
       buildingPolygons,
+      manualBuildingPolygons,
     }));
   } catch(_) {}
 }
@@ -408,6 +409,7 @@ function autoLoad() {
       const flat = rings.flat();
       map.fitBounds(L.latLngBounds(flat.map(c=>[c.lat,c.lng])),{padding:[40,40],maxZoom:21});
     }
+    if (s.manualBuildingPolygons?.length) manualBuildingPolygons = s.manualBuildingPolygons;
     if (s.buildingPolygons?.length) { buildingPolygons = s.buildingPolygons; renderBuildings(); }
     if (s.badgeText) {
       document.getElementById('title-badge-text').textContent = s.badgeText;
@@ -425,7 +427,8 @@ function autoLoad() {
 
 // ── State ────────────────────────────────────────────────────────────────────
 let rings = null;
-let buildingPolygons = []; // [{lat,lng}] rings fetched from Overpass
+let buildingPolygons = []; // [{lat,lng}] rings — OSM-fetched + manually drawn (merged)
+let manualBuildingPolygons = []; // manually drawn buildings — persisted across OSM refetches
 let placedMarkers = [];
 let selectedSymbolId = null;
 let selectedPlantPE = null;
@@ -1227,7 +1230,8 @@ async function fetchBuildings(rings){
     if(gen!==_buildingFetchGen)return;
     // Discard any building whose nearest point to the boundary line is > 15 m —
     // it cannot trigger a clearance violation for anything placed inside the boundary.
-    buildingPolygons=polys.filter(ring=>ring.some(pt=>distToBoundary(pt,rings)<=15));
+    const osmPolys=polys.filter(ring=>ring.some(pt=>distToBoundary(pt,rings)<=15));
+    buildingPolygons=[...osmPolys,...manualBuildingPolygons];
     renderBuildings();
     recheckViolations();
     renderConnections(); // re-route pipes now that building data is available
@@ -1375,7 +1379,7 @@ function confirmDrawBoundary(){
   // Apply boundary — same post-processing as doLoad
   if(boundaryLayer){map.removeLayer(boundaryLayer);boundaryLayer=null;}
   if(buildingLayerGroup){map.removeLayer(buildingLayerGroup);buildingLayerGroup=null;}
-  buildingPolygons=[];
+  buildingPolygons=[];manualBuildingPolygons=[];
   rings=newRings;
   const poly=L.polygon(rings.map(r=>r.map(c=>[c.lat,c.lng])),
     {color:'#E11D48',weight:2.5,fillColor:'#E11D48',fillOpacity:0.08}).addTo(map);
@@ -1431,6 +1435,7 @@ function confirmDrawBuilding(){
   if(drawBuildingPoints.length<3)return;
   const newRing=[...drawBuildingPoints];
   cancelDrawBuilding();
+  manualBuildingPolygons.push(newRing);
   buildingPolygons.push(newRing);
   renderBuildings();
   recheckViolations();
