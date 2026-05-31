@@ -1697,16 +1697,29 @@ function renderConnections(zoomOnly=false){
       // User-dragged waypoints — preserve them as-is
       nw[c.id]=[s,...middle,e];
     } else if(c.type==='gravity' && c.coords.length>2){
-      // Auto-routed gravity pipe — always use the freshly computed path from computeConns
-      nw[c.id]=[...c.coords];
-    } else {
-      const pts=interpPts(s,e,sp);
-      // Pressure/cable pipes always get at least one draggable midpoint node
-      // so the user can arc the pipe even when markers are close together
-      if(pts.length===0&&(c.type==='pressure'||c.type==='cable')){
-        pts.push({lat:(s.lat+e.lat)/2,lng:(s.lng+e.lng)/2});
+      // Auto-routed gravity pipe. On zoom-only renders, keep the existing path
+      // because stpFaces/icEdgePt use pixel offsets that shift at different zoom
+      // levels — recomputing can fail the clearance check and fall back to a
+      // straight line through a building.
+      if(zoomOnly && ex){
+        nw[c.id]=ex;
+      } else {
+        nw[c.id]=[...c.coords];
       }
-      nw[c.id]=[s,...pts,e];
+    } else {
+      // On zoom-only renders, preserve any existing multi-point gravity path for
+      // the same reason (pixel-dependent endpoints may have moved slightly).
+      if(zoomOnly && ex && ex.length>2 && c.type==='gravity'){
+        nw[c.id]=ex;
+      } else {
+        const pts=interpPts(s,e,sp);
+        // Pressure/cable pipes always get at least one draggable midpoint node
+        // so the user can arc the pipe even when markers are close together
+        if(pts.length===0&&(c.type==='pressure'||c.type==='cable')){
+          pts.push({lat:(s.lat+e.lat)/2,lng:(s.lng+e.lng)/2});
+        }
+        nw[c.id]=[s,...pts,e];
+      }
     }
   }
   connectionWaypoints=nw;
@@ -1776,8 +1789,10 @@ function renderConnections(zoomOnly=false){
     }
     connDots[c.id]=dots;
 
-    // 45m check — place "?" IC suggestion markers every 22m (proposed pipes only)
-    if(c.type==='gravity' && !c.existing){
+    // 45m check — place "?" IC suggestion markers every 22m (proposed pipes only).
+    // Skip on zoom-only renders: path length fluctuates with pixel-based endpoints
+    // and would reset gravSuggestShown, causing the modal to refire after dismiss.
+    if(c.type==='gravity' && !c.existing && !zoomOnly){
       let total=0;
       for(let i=0;i<path.length-1;i++)total+=dist(path[i],path[i+1]);
       if(total>45){
@@ -1819,7 +1834,9 @@ function renderConnections(zoomOnly=false){
       setTimeout(()=>showModal('grav-suggest-modal'),250);
     }
   }
-  if(!hasLong){gravSuggestShown=false;gravSuggestDeclined=false;gravBannerDismissed=false;}
+  // Only reset gravity suggestion state when doing a full (non-zoom) render,
+  // so that zooming in/out doesn't clear gravSuggestShown and refire the modal.
+  if(!zoomOnly && !hasLong){gravSuggestShown=false;gravSuggestDeclined=false;gravBannerDismissed=false;}
 }
 
 // ── Pin HTML ──────────────────────────────────────────────────────────────────
@@ -2172,6 +2189,7 @@ function clearAll(){
   connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};stpTargetIcId=null;manualWaypointConns.clear();
   promotedLastIcId=null;icSuggestionDismissed=false;
   suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;
+  clearSelected();
   renderConnections();
   updateVioBanner();updateClearBtn();
   autoSave();
