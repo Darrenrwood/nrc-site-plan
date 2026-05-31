@@ -763,11 +763,9 @@ function applyIcSnaps(baseConns){
       if(c.type!=='gravity'||c.existing)continue;
       if(c.id.includes(`-sn-${ic.id}-`))continue;
       const path=connectionWaypoints[c.id]??c.coords;
-      // Don't split if IC is already an endpoint of this connection
+      // Find closest point on this pipe to the IC
       const ep0=map.latLngToContainerPoint([path[0].lat,path[0].lng]);
       const epN=map.latLngToContainerPoint([path[path.length-1].lat,path[path.length-1].lng]);
-      if(Math.hypot(icPx.x-ep0.x,icPx.y-ep0.y)<SNAP_PX)continue;
-      if(Math.hypot(icPx.x-epN.x,icPx.y-epN.y)<SNAP_PX)continue;
       let minDist=Infinity,splitIdx=0;
       for(let i=0;i<path.length-1;i++){
         const aPx=map.latLngToContainerPoint([path[i].lat,path[i].lng]);
@@ -775,11 +773,15 @@ function applyIcSnaps(baseConns){
         const d=pxSegDist(icPx,aPx,bPx);
         if(d<minDist){minDist=d;splitIdx=i;}
       }
-      if(minDist>SNAP_PX && icOriginConn[ic.id]!==c.id)continue;
-      // Record which pipe this IC is on and how far along it (0–1) so it can
-      // follow the pipe when connected markers are moved or the STP is rotated.
+      // IC belongs to this pipe if it's near it, or was previously assigned to it
+      const onThisPipe=minDist<=SNAP_PX||icOriginConn[ic.id]===c.id;
+      if(!onThisPipe)continue;
+      // Always record pipe ownership — needed for cascade-delete when the pipe disappears
       const _s=path[0],_e=path[path.length-1],_total=dist(_s,_e);
       if(_total>0.1){icAttachments[ic.id]={connId:c.id,t:dist(_s,{lat:ic.lat,lng:ic.lng})/_total};icOriginConn[ic.id]=c.id;}
+      // Don't split if IC is at/near an endpoint — avoid a near-zero sub-connection
+      if(Math.hypot(icPx.x-ep0.x,icPx.y-ep0.y)<SNAP_PX)break;
+      if(Math.hypot(icPx.x-epN.x,icPx.y-epN.y)<SNAP_PX)break;
       const beforePts=path.slice(0,splitIdx+1);
       const afterPts=path.slice(splitIdx+1);
       const eIn=icEdgePt(ic,beforePts[beforePts.length-1]);
@@ -1676,7 +1678,8 @@ function renderConnections(zoomOnly=false){
   const nw={};
   for(const c of conns){
     const s=c.coords[0],e=c.coords[c.coords.length-1];
-    const sp=c.type==='gravity'?GRAV_SPACING:PRES_SPACING;
+    const pipeLen=dist(s,e);
+    const sp=c.type==='gravity'?(pipeLen>9?9:GRAV_SPACING):PRES_SPACING;
     const ex=connectionWaypoints[c.id];
     const middle=ex?ex.slice(1,-1):null;
     // If either endpoint has moved due to rotation or marker drag, the stored middle
