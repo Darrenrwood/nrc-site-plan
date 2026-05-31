@@ -641,6 +641,11 @@ function computeConns(markers){
     const eFace=icEdgePt(elec,kiosk);
     out.push({id:'kiosk-elec',coords:[kFace,eFace],color:'#111827',width:2.5,dashed:true,type:'cable'});
   }
+  if(kiosk&&pump){
+    const kFace=kioskFace(kiosk,pump);
+    const pFace=icEdgePt(pump,kiosk);
+    out.push({id:'kiosk-pump',coords:[kFace,pFace],color:'#111827',width:2.5,dashed:true,type:'cable'});
+  }
   // Last IC → existing ST: always draw this when both are present.
   // Existing ICs are upstream of the last IC and chain to it, not past it to the ST.
   const existIcs=markers.filter(m=>m.symbolId==='existing_inspection_chamber');
@@ -1600,8 +1605,9 @@ function computeMaterials() {
   // Pressure pipe: pump → discharge point or drainage field
   if (pump) addP(pump, disc || drain);
 
-  // Armoured cable: kiosk → electrical point
+  // Armoured cable: kiosk → electrical point and kiosk → pumping station
   addC(kiosk, elec);
+  addC(kiosk, pump);
 
   return { icLarge, icSmall, pumps, gravLen, presLen, cableLen };
 }
