@@ -747,6 +747,9 @@ function hasVio(m){
   if(!r)return false;
   const p={lat:m.lat,lng:m.lng};
   if(r.boundary>0&&distToBoundary(p,rings)<r.boundary)return true;
+  // A marker whose centre is inside a building is always a violation regardless of
+  // the numeric clearance threshold (distToBuildings from inside can exceed the threshold).
+  if(buildingPolygons.length&&_inAnyBuilding(m.lat,m.lng))return true;
   if(r.building>0&&buildingPolygons.length&&distToBuildings(p)<r.building)return true;
   return false;
 }
@@ -1378,9 +1381,15 @@ map.on('click',e=>{
   const sym=SYM[selectedSymbolId];
   if(SINGLE_INSTANCE.has(sym.id)&&placedMarkers.some(m=>m.symbolId===sym.id))return;
 
-  // Block placement inside a building footprint
-  if(_inAnyBuilding(lat,lng)){
-    _showBuildingToast(-1); // reuse toast infrastructure with a custom message
+  // Block placement if the marker centre OR any footprint corner overlaps a building.
+  // STP and drain field open a PE/size modal before we know the final dims, so
+  // check only their centre; all other symbols have known dims so check the full footprint.
+  const _needsSizeModal=sym.id==='sewage_treatment_plant'||sym.id==='drainage_field'||sym.dims?.userDefined;
+  const _tapOverlaps=_needsSizeModal
+    ?_inAnyBuilding(lat,lng)
+    :_markerOverlapsBuilding({lat,lng,symbolId:sym.id,rotation:0});
+  if(_tapOverlaps){
+    _showBuildingToast(-1);
     return;
   }
 
@@ -2197,6 +2206,7 @@ function confirmAddIcToIcSt(){
     if(d+sl>=half){
       const t=(half-d)/sl;
       const pt={lat:path[i].lat+t*(path[i+1].lat-path[i].lat),lng:path[i].lng+t*(path[i+1].lng-path[i].lng)};
+      if(_inAnyBuilding(pt.lat,pt.lng))return; // midpoint is inside a building — user must place manually
       addMarker({lat:pt.lat,lng:pt.lng,symbolId:'new_inspection_chamber_small'});
       showGravIcBanner('✓ New IC added — drag it to your preferred position');
       return;
@@ -2206,6 +2216,7 @@ function confirmAddIcToIcSt(){
 }
 function batchAddMarkers(ms){
   for(const m of ms){
+    if(_inAnyBuilding(m.lat,m.lng))continue; // skip positions inside buildings
     m.id=String(++markerCounter);
     placedMarkers.push(m);
     if(hasVio(m)){violatingIds.add(m.id);confirmingId=m.id;}
@@ -2251,6 +2262,7 @@ function acceptIcSuggestion(){
     }
   }
   if(!bestPt)return;
+  if(_inAnyBuilding(bestPt.lat,bestPt.lng))return; // suggested position is inside a building
   // Set promotedLastIcId before addMarker so renderConnections inside it already
   // knows to route the STP through the new IC.
   promotedLastIcId=String(markerCounter+1);
