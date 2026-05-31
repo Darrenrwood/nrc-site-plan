@@ -463,6 +463,7 @@ let icAttachments = {};        // {[icId]: {connId, t}} — fraction along pipe 
 let icOriginConn  = {};        // {[icId]: connId} — persists after manual drag for cascade-delete
 let stpTargetIcId = null;      // IC the STP foul inlet connects to (null = default last IC)
 let pendingStpIcCb = null;     // callback waiting for stp-ic-modal answer
+let _cachedConns = null;       // last full computeConns result — reused on zoom-only renders
 
 // ── Leaflet layers ────────────────────────────────────────────────────────────
 let map, boundaryLayer = null, buildingLayerGroup = null;
@@ -1690,20 +1691,29 @@ function renderConnections(zoomOnly=false){
   suggestCircles=[];
   suggestPositions=[];
 
-  const baseConns=computeConns(placedMarkers);
-  // Reposition new ICs that are attached to a pipe so they follow it when
-  // connected markers move (pump dragged, STP rotated, etc.)
-  for(const [icId,att] of Object.entries(icAttachments)){
-    const ic2=placedMarkers.find(m=>m.id===icId);
-    const conn=baseConns.find(c=>c.id===att.connId);
-    if(!ic2||!conn){delete icAttachments[icId];delete icOriginConn[icId];continue;}
-    const s=conn.coords[0],e=conn.coords[conn.coords.length-1];
-    const t=Math.max(0,Math.min(1,att.t));
-    ic2.lat=s.lat+t*(e.lat-s.lat);
-    ic2.lng=s.lng+t*(e.lng-s.lng);
-    renderMarker(ic2);
+  // On zoom-only renders, reuse the cached connection topology so that routing
+  // and IC-snap logic are never re-evaluated just because the user zoomed.
+  // The full pipeline only runs when markers actually change.
+  let conns;
+  if(zoomOnly && _cachedConns){
+    conns=_cachedConns;
+  } else {
+    const baseConns=computeConns(placedMarkers);
+    // Reposition new ICs that are attached to a pipe so they follow it when
+    // connected markers move (pump dragged, STP rotated, etc.)
+    for(const [icId,att] of Object.entries(icAttachments)){
+      const ic2=placedMarkers.find(m=>m.id===icId);
+      const conn=baseConns.find(c=>c.id===att.connId);
+      if(!ic2||!conn){delete icAttachments[icId];delete icOriginConn[icId];continue;}
+      const s=conn.coords[0],e=conn.coords[conn.coords.length-1];
+      const t=Math.max(0,Math.min(1,att.t));
+      ic2.lat=s.lat+t*(e.lat-s.lat);
+      ic2.lng=s.lng+t*(e.lng-s.lng);
+      renderMarker(ic2);
+    }
+    conns=applyIcSnaps(baseConns);
+    _cachedConns=conns;
   }
-  const conns=applyIcSnaps(baseConns);
 
   // Sync waypoints
   const nw={};
@@ -2092,7 +2102,7 @@ function showGravIcBanner(msg){
   b.textContent=msg||'✓ ICs added — drag any of them to fine-tune their position';
   b.classList.add('vis');
   clearTimeout(gravIcBannerTimer);
-  gravIcBannerTimer=setTimeout(()=>b.classList.remove('vis'),7000);
+  gravIcBannerTimer=setTimeout(()=>b.classList.remove('vis'),3000);
 }
 function confirmAddIcToIcSt(){
   hideModal('ic-st-add-modal');
@@ -2211,7 +2221,7 @@ function clearAll(){
     map.removeLayer(markerLayers[id]);delete markerLayers[id];
   });
   placedMarkers=[];violatingIds=new Set();confirmingId=null;
-  connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};stpTargetIcId=null;manualWaypointConns.clear();
+  connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};stpTargetIcId=null;manualWaypointConns.clear();_cachedConns=null;
   promotedLastIcId=null;icSuggestionDismissed=false;
   suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;
   clearSelected();
