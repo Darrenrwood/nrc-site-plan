@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+<!-- v2026-05-31b -->
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -158,6 +159,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="banner" id="grav-banner">⚠ Gravity pipe exceeds 45 m — add a small IC at least every 22 m</div>
     <div class="banner" id="grav-ic-banner" style="color:#86efac">✓ ICs added — drag any of them to fine-tune their position</div>
     <div class="banner" id="vio-banner" onclick="dismissVio()">⚠ <span id="vio-text">Placement is outside recommended parameters — tap to confirm</span></div>
+    <div class="banner" id="midway-banner" style="display:none;color:#F59E0B">⊕ Tap the map to set the join point — it will snap to the nearest existing pipe</div>
 
     <div id="load-overlay">
       <div id="load-card"><div class="spinner"></div><span id="load-text">Looking up boundary…</span></div>
@@ -295,10 +297,23 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 <div class="modal" id="stp-pe-modal">
   <div class="modal-sheet center">
     <div class="modal-handle"></div>
-    <div class="modal-title">Select STP Size</div>
+    <div class="modal-title" id="stp-pe-title">Select STP Size</div>
     <div id="stp-pe-btns" style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin:16px 0"></div>
     <div class="dim-btns">
       <button class="dim-btn" onclick="cancelStpPe()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Midway connection type picker -->
+<div class="modal" id="midway-type-modal">
+  <div class="modal-sheet center">
+    <div class="modal-handle"></div>
+    <div class="modal-title">New IC or just a join?</div>
+    <p style="font-size:13px;color:#aaa;line-height:1.6;margin:0 0 16px">Add a new inspection chamber at this point, or just a pipe join?</p>
+    <div class="dim-btns">
+      <button class="dim-btn" onclick="confirmMidwayJoin()">Just a join</button>
+      <button class="dim-btn pri" style="background:#16A34A" onclick="confirmMidwayIc()">New IC</button>
     </div>
   </div>
 </div>
@@ -318,6 +333,7 @@ const SYMBOLS = [
   {id:'drainage_field',label:'Drainage Field',shortLabel:'Drain Field',category:'new',color:'#4D7C0F',dims:{type:'rectangle',width:5,depth:5,userDefined:true}},
   {id:'discharge_point',label:'Watercourse Discharge',shortLabel:'Discharge',category:'new',color:'#0284C7'},
   {id:'electrical_point',label:'Electrical Point',shortLabel:'Electrical',category:'new',color:'#CA8A04'},
+  {id:'pipe_junction',label:'Pipe Junction',shortLabel:'Join',category:'new',color:'#92400E',dims:{type:'circle',radius:0.05},paletteHidden:true},
 ];
 const SYM = Object.fromEntries(SYMBOLS.map(s=>[s.id,s]));
 
@@ -328,6 +344,7 @@ const PLANT_SIZES = [
   {pe:12,length:3500,width:2040,height:2515,volume:8500, weight:380},
   {pe:15,length:3520,width:2240,height:2575,volume:10000,weight:455},
 ];
+const DRAIN_FIELD_SIZES = {5:{width:4,depth:6},7:{width:5,depth:7},9:{width:5,depth:8},12:{width:6,depth:9},15:{width:7,depth:10}};
 
 const CLEARANCES = {
   sewage_treatment_plant:       {building:7, boundary:2,  watercourse:10,well:50},
@@ -414,9 +431,16 @@ let violatingIds = new Set();
 let confirmingId = null;
 let connectionWaypoints = {};
 let bendViolations = {};
+let manualWaypointConns = new Set(); // connections where user has manually dragged a waypoint
+let _buildingFetchGen = 0; // incremented on each fetchBuildings call; stale responses discard themselves
+let _cacheTileGen    = 0; // incremented on each cacheTilesForBoundary call; old workers self-cancel
 let dimensionPending = null; // {lat,lng,symbol}
-let stpPlacePending = null;  // {lat,lng} — coords held while PE picker is open
+let stpPlacePending = null;       // {lat,lng} — coords held while PE picker is open
+let drainFieldPlacePending = null; // {lat,lng} — coords held while drain field PE picker is open
 let drawingBoundary = false;
+let midwayPickMode = false;
+let midwaySnapPt = null;     // snapped {lat,lng} on the existing pipe
+let midwayPreviewDot = null; // temporary L.circleMarker shown after snap
 let drawPoints = [];         // {lat,lng} vertices being drawn
 let drawTempLayer = null;
 let markerCounter = 0;
@@ -489,6 +513,118 @@ function deflAngle(a,b,c){
   if(!la||!lb)return 0;
   return 180-Math.acos(Math.max(-1,Math.min(1,(ax*bx+ay*by)/(la*lb))))*(180/Math.PI);
 }
+
+// ── Building-aware pipe routing ──────────────────────────────────────────────
+const PIPE_BLDG_CLEAR  = 1.0;  // metres — auto-routed foul pipes stay this far from building edges
+const FOUL_BEND_MAX_DEG = 30;  // a 300mm IC is placed wherever a foul pipe turns more than this
+
+// Local metric coordinate helpers (equirectangular, centred on `o`)
+function _ll2m(pt,o){const c=Math.cos(o.lat*Math.PI/180);return{x:(pt.lng-o.lng)*111319.9*c,y:(pt.lat-o.lat)*111319.9};}
+function _m2ll(pt,o){const c=Math.cos(o.lat*Math.PI/180);return{lat:o.lat+pt.y/111319.9,lng:o.lng+pt.x/(111319.9*c)};}
+
+// 2-D cross product of vectors OA and OB
+function _cross2d(o,a,b){return(a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);}
+
+// True if segments AB and CD have a proper (non-endpoint) crossing
+function _segsX(a,b,c,d){
+  const d1=_cross2d(c,d,a),d2=_cross2d(c,d,b),d3=_cross2d(a,b,c),d4=_cross2d(a,b,d);
+  return((d1>0&&d2<0)||(d1<0&&d2>0))&&((d3>0&&d4<0)||(d3<0&&d4>0));
+}
+
+// Minimum distance from point P to segment AB (metric coords)
+function _ptSegD(p,a,b){
+  const dx=b.x-a.x,dy=b.y-a.y,l2=dx*dx+dy*dy;
+  if(!l2)return Math.hypot(p.x-a.x,p.y-a.y);
+  const t=Math.max(0,Math.min(1,((p.x-a.x)*dx+(p.y-a.y)*dy)/l2));
+  return Math.hypot(p.x-a.x-t*dx,p.y-a.y-t*dy);
+}
+function _segSegD(a,b,c,d){
+  if(_segsX(a,b,c,d))return 0;
+  return Math.min(_ptSegD(a,c,d),_ptSegD(b,c,d),_ptSegD(c,a,b),_ptSegD(d,a,b));
+}
+
+// Point-in-polygon (metric, ray-casting)
+function _inPolyM(pt,poly){
+  let inside=false;
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const{x:xi,y:yi}=poly[i],{x:xj,y:yj}=poly[j];
+    if((yi>pt.y)!==(yj>pt.y)&&pt.x<(xj-xi)*(pt.y-yi)/(yj-yi)+xi)inside=!inside;
+  }
+  return inside;
+}
+
+// True if segment AB (metric) intersects poly or comes within `cl` metres of any edge
+function _segBlocked(a,b,poly,cl){
+  if(_inPolyM(a,poly)||_inPolyM(b,poly))return true;
+  for(let i=0;i<poly.length;i++){
+    const c=poly[i],d=poly[(i+1)%poly.length];
+    if(_segsX(a,b,c,d)||_segSegD(a,b,c,d)<cl)return true;
+  }
+  return false;
+}
+
+// Outward-expand each polygon vertex from centroid by `d` metres (good for convex buildings)
+function _expandPoly(poly,d){
+  const cx=poly.reduce((s,v)=>s+v.x,0)/poly.length;
+  const cy=poly.reduce((s,v)=>s+v.y,0)/poly.length;
+  return poly.map(v=>{const dx=v.x-cx,dy=v.y-cy,len=Math.hypot(dx,dy)||1;return{x:v.x+dx/len*d,y:v.y+dy/len*d};});
+}
+
+// True if lat/lng falls inside any loaded building polygon
+function _inAnyBuilding(lat,lng){
+  if(!buildingPolygons.length)return false;
+  const o={lat,lng},pt={x:0,y:0};
+  return buildingPolygons.some(ring=>_inPolyM(pt,ring.map(p=>_ll2m(p,o))));
+}
+
+// Route from startLL to endLL in lat/lng, avoiding buildings by PIPE_BLDG_CLEAR metres.
+// Returns an array of {lat,lng} including start and end.
+// Falls back to direct path if no buildings or no route found.
+function _routeAroundBuildings(startLL,endLL){
+  if(!buildingPolygons.length)return[startLL,endLL];
+  const o=startLL;
+  const s=_ll2m(startLL,o),e=_ll2m(endLL,o);
+  const polys=buildingPolygons.map(ring=>ring.map(p=>_ll2m(p,o)));
+  if(!polys.some(p=>_segBlocked(s,e,p,PIPE_BLDG_CLEAR)))return[startLL,endLL];
+  // Visibility-graph nodes: start, end, vertices of each building expanded by clearance + margin
+  const expanded=polys.map(p=>_expandPoly(p,PIPE_BLDG_CLEAR+0.2));
+  const nodes=[s,e];
+  for(const ep of expanded)for(const v of ep)nodes.push(v);
+  const n=nodes.length;
+  const dists=new Float64Array(n).fill(Infinity);
+  const prev=new Int32Array(n).fill(-1);
+  dists[0]=0;
+  const vis=new Uint8Array(n);
+  for(let iter=0;iter<n;iter++){
+    let u=-1;
+    for(let i=0;i<n;i++)if(!vis[i]&&(u<0||dists[i]<dists[u]))u=i;
+    if(u<0||dists[u]===Infinity)break;
+    vis[u]=1;if(u===1)break;
+    for(let v=0;v<n;v++){
+      if(vis[v])continue;
+      const a=nodes[u],b=nodes[v];
+      if(polys.some(p=>_segBlocked(a,b,p,PIPE_BLDG_CLEAR)))continue;
+      const d=dists[u]+Math.hypot(b.x-a.x,b.y-a.y);
+      if(d<dists[v]){dists[v]=d;prev[v]=u;}
+    }
+  }
+  if(dists[1]===Infinity)return[startLL,endLL];
+  const path=[];
+  for(let c=1;c>=0;c=prev[c]){path.unshift(nodes[c]);if(c===0)break;}
+  return path.map(pt=>_m2ll(pt,o));
+}
+
+// Actual angle-change at vertex b in degrees (0 = straight, 90 = right-angle)
+function _angleDeg(a,b,c){
+  const cl=Math.cos(b.lat*Math.PI/180);
+  const ax=(b.lng-a.lng)*111000*cl,ay=(b.lat-a.lat)*111000;
+  const bx=(c.lng-b.lng)*111000*cl,by=(c.lat-b.lat)*111000;
+  const la=Math.hypot(ax,ay),lb=Math.hypot(bx,by);
+  if(!la||!lb)return 0;
+  return Math.acos(Math.max(-1,Math.min(1,(ax*bx+ay*by)/(la*lb))))*180/Math.PI;
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 function distToSeg(p,a,b){
   const cl=Math.cos(p.lat*Math.PI/180);
   const ax=(a.lng-p.lng)*111000*cl,ay=(a.lat-p.lat)*111000;
@@ -596,7 +732,7 @@ function icEdgePt(ic,towardPt){
   const tp=map.latLngToContainerPoint([towardPt.lat,towardPt.lng]);
   const dx=tp.x-ip.x,dy=tp.y-ip.y,len=Math.hypot(dx,dy);
   if(len<1)return{lat:ic.lat,lng:ic.lng};
-  const r=SYM[ic.symbolId]?.small?13:17;
+  const r=ic.symbolId==='pipe_junction'?8:SYM[ic.symbolId]?.small?13:17;
   return map.containerPointToLatLng([ip.x+(dx/len)*r,ip.y+(dy/len)*r]);
 }
 
@@ -672,7 +808,8 @@ function maybeShowStpIcDialog(cb){
   const btns=document.getElementById('stp-ic-btns');
   btns.innerHTML=nums.map(({marker,number})=>
     `<button class="dim-btn pri" style="min-width:64px;font-size:16px;font-weight:700;padding:10px 0" onclick="stpIcChoose('${marker.id}')">IC${number}</button>`
-  ).join('');
+  ).join('')+
+  `<button class="dim-btn" style="min-width:64px;font-size:14px;font-weight:600;padding:10px 0;border-color:#92400E;color:#92400E" onclick="chooseMidwayPoint()">Midway</button>`;
   pendingStpIcCb=cb;
   showModal('stp-ic-modal');
 }
@@ -684,6 +821,71 @@ function stpIcChoose(icId){
   placedMarkers.filter(m=>m.symbolId==='last_inspection_chamber'||m.symbolId==='existing_inspection_chamber').forEach(renderMarker);
 }
 function stpIcCancel(){hideModal('stp-ic-modal');pendingStpIcCb=null;}
+
+// ── Midway connection point ───────────────────────────────────────────────────
+function _nearestPtOnSeg(p,a,b){
+  const cl=Math.cos(p.lat*Math.PI/180);
+  const ax=(a.lng-p.lng)*111000*cl,ay=(a.lat-p.lat)*111000;
+  const bx=(b.lng-p.lng)*111000*cl,by=(b.lat-p.lat)*111000;
+  const dx=bx-ax,dy=by-ay,lsq=dx*dx+dy*dy;
+  const t=lsq?Math.max(0,Math.min(1,((-ax)*dx+(-ay)*dy)/lsq)):0;
+  return{lat:a.lat+t*(b.lat-a.lat),lng:a.lng+t*(b.lng-a.lng),d:Math.sqrt((ax+t*dx)**2+(ay+t*dy)**2)};
+}
+function _nearestPtOnPipeRun(lat,lng){
+  const p={lat,lng};
+  let best=null,bestD=Infinity;
+  const ids=Object.keys(connectionWaypoints).filter(k=>k==='ic-st'||k.startsWith('eic-'));
+  for(const id of ids){
+    const path=connectionWaypoints[id];
+    if(!path||path.length<2)continue;
+    for(let i=0;i<path.length-1;i++){
+      const r=_nearestPtOnSeg(p,path[i],path[i+1]);
+      if(r.d<bestD){bestD=r.d;best={lat:r.lat,lng:r.lng};}
+    }
+  }
+  return best||p; // fallback: tap point itself
+}
+function chooseMidwayPoint(){
+  hideModal('stp-ic-modal');
+  pendingStpIcCb=null;
+  midwayPickMode=true;
+  document.getElementById('midway-banner').style.display='flex';
+  map.getContainer().style.cursor='crosshair';
+}
+function _handleMidwayTap(lat,lng){
+  midwayPickMode=false;
+  document.getElementById('midway-banner').style.display='none';
+  map.getContainer().style.cursor='';
+  midwaySnapPt=_nearestPtOnPipeRun(lat,lng);
+  if(midwayPreviewDot){map.removeLayer(midwayPreviewDot);}
+  midwayPreviewDot=L.circleMarker([midwaySnapPt.lat,midwaySnapPt.lng],
+    {radius:7,color:'#92400E',fillColor:'#92400E',fillOpacity:1,weight:0,interactive:false}).addTo(map);
+  showModal('midway-type-modal');
+}
+function _placeMidwayMarker(symbolId){
+  hideModal('midway-type-modal');
+  if(midwayPreviewDot){map.removeLayer(midwayPreviewDot);midwayPreviewDot=null;}
+  if(!midwaySnapPt)return;
+  const pt=midwaySnapPt;midwaySnapPt=null;
+  // Mark the ID before addMarker increments counter
+  const newId=String(markerCounter+1);
+  addMarker({lat:pt.lat,lng:pt.lng,symbolId});
+  stpTargetIcId=newId;
+  renderConnections();autoSave();
+}
+function confirmMidwayJoin(){_placeMidwayMarker('pipe_junction');}
+function confirmMidwayIc(){_placeMidwayMarker('new_inspection_chamber_small');}
+
+// After STP is dragged, only re-ask which IC to connect to if a different IC
+// is now nearest — otherwise keep the existing choice silently.
+function recheckStpIcOnDrag(stp){
+  const nums=icNumbering();
+  if(nums.length<=1)return;
+  const nearest=nums.reduce((b,n)=>dist(stp,n.marker)<dist(stp,b.marker)?n:b);
+  if(!stpTargetIcId||nearest.marker.id!==stpTargetIcId){
+    maybeShowStpIcDialog(()=>{renderConnections();autoSave();});
+  }
+}
 
 function computeConns(markers){
   const get=id=>markers.find(m=>m.symbolId===id);
@@ -713,8 +915,8 @@ function computeConns(markers){
     }
   }
 
-  if(effIc&&stp&&stpIn)out.push({id:'ic-stp',coords:[icEdgePt(effIc,stpIn),stpIn],color:'#92400E',width:3,type:'gravity'});
-  if(stp&&pump&&stpOut)out.push({id:'stp-pump',coords:[stpOut,icEdgePt(pump,stpOut)],color:'#92400E',width:3,type:'gravity'});
+  if(effIc&&stp&&stpIn)out.push({id:'ic-stp',coords:_routeAroundBuildings(icEdgePt(effIc,stpIn),stpIn),color:'#92400E',width:3,type:'gravity'});
+  if(stp&&pump&&stpOut)out.push({id:'stp-pump',coords:_routeAroundBuildings(stpOut,icEdgePt(pump,stpOut)),color:'#92400E',width:3,type:'gravity'});
 
   if(pump&&(drain||disc)){
     const pc={lat:pump.lat,lng:pump.lng};
@@ -725,7 +927,7 @@ function computeConns(markers){
   if(stp&&!pump&&stpOut&&(drain||disc)){
     const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,stpOut);
     const destEnd=disc?icEdgePt(disc,stpOut):destCenter;
-    out.push({id:'stp-dest',coords:[stpOut,destEnd],color:'#92400E',width:3,type:'gravity'});
+    out.push({id:'stp-dest',coords:_routeAroundBuildings(stpOut,destEnd),color:'#92400E',width:3,type:'gravity'});
   }
   if(kiosk&&elec){
     const kFace=kioskFace(kiosk,elec);
@@ -744,7 +946,7 @@ function computeConns(markers){
     const [A,B]=stpFaces(st);
     const ic2={lat:ic.lat,lng:ic.lng};
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
-    out.push({id:'ic-st',coords:[icEdgePt(ic,stIn),stIn],color:'#92400E',width:3,type:'gravity',existing:true});
+    out.push({id:'ic-st',coords:_routeAroundBuildings(icEdgePt(ic,stIn),stIn),color:'#92400E',width:3,type:'gravity',existing:true});
   }
   if(existIcs.length){
     const remaining=[...existIcs];
@@ -758,7 +960,7 @@ function computeConns(markers){
       }
       const next=remaining.splice(best,1)[0];
       const e0=icEdgePt(prev,next),e1=icEdgePt(next,prev);
-      out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity',existing:true});
+      out.push({id:`eic-${prev.id}-${next.id}`,coords:_routeAroundBuildings(e0,e1),color:'#92400E',width:3,type:'gravity',existing:true});
       prev=next;
     }
   }
@@ -824,6 +1026,25 @@ function _toTileXY(lat, lng, z) {
     y: Math.floor((1 - Math.log(Math.tan(lr) + 1 / Math.cos(lr)) / Math.PI) / 2 * n),
   };
 }
+function _tileCenterLL(z, x, y) {
+  const n = 1 << z;
+  const lng = (x + 0.5) / n * 360 - 180;
+  const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 0.5) / n))) * 180 / Math.PI;
+  return { lat, lng };
+}
+// Ray-casting point-in-polygon for lat/lng rings
+function _ptInRings(lat, lng, rings) {
+  for (const r of rings) {
+    let inside = false;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const { lat: yi, lng: xi } = r[i], { lat: yj, lng: xj } = r[j];
+      if ((yi > lat) !== (yj > lat) && lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)
+        inside = !inside;
+    }
+    if (inside) return true;
+  }
+  return false;
+}
 
 // Progress pill shown at bottom of map during caching
 function _showCacheBar(done, total) {
@@ -844,46 +1065,95 @@ function _showCacheBar(done, total) {
   }
 }
 
-// Pre-cache all tiles covering the boundary bbox + CACHE_BUFFER_M buffer
+// Pre-cache tiles covering the boundary.
+//   z14-z15  context  — 1 km buffer around boundary bbox; z14/z15 tiles are large so this is always ~20 tiles
+//   z17-z19  detail   — only tiles whose centre is inside OR within DETAIL_BUFFER_M of the boundary edge
+// A generation counter (_cacheTileGen) ensures that if a second call arrives (e.g. INSPIRE then manual
+// boundary), the first call's workers self-cancel so only the latest boundary is downloaded.
 const SAT_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const OSM_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-const CACHE_BUFFER_M = 200; // metres of context beyond the boundary edge
-const CACHE_ZOOMS = [14, 15, 16, 17, 18, 19, 20, 21];
+const DETAIL_BUFFER_M = 250; // metres outside boundary edge for high-detail tiles
 
 async function cacheTilesForBoundary(rings) {
   if (!navigator.onLine) return;
+  const gen = ++_cacheTileGen; // any workers from a previous call will see gen !== _cacheTileGen and stop
+
   const flat = rings.flat();
   const lats = flat.map(p => p.lat), lngs = flat.map(p => p.lng);
   const minLat = Math.min(...lats), maxLat = Math.max(...lats);
   const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
   const midLat = (minLat + maxLat) / 2;
-  const dLat = CACHE_BUFFER_M / 111000;
-  const dLng = CACHE_BUFFER_M / (111000 * Math.cos(midLat * Math.PI / 180));
-  const bbox = { n: maxLat + dLat, s: minLat - dLat, w: minLng - dLng, e: maxLng + dLng };
 
-  // Build tile list for both satellite and OSM across all cache zoom levels
-  const SOURCES = [
-    { prefix: 'sat', url: SAT_URL },
-    { prefix: 'osm', url: OSM_URL },
-  ];
+  // Context bbox — 1 km buffer for navigation; z14 tiles are ~9 km wide so this is always tiny
+  const ctxM = 1000;
+  const ctxLat = ctxM / 111000, ctxLng = ctxM / (111000 * Math.cos(midLat * Math.PI / 180));
+  const ctxBbox = { n: maxLat + ctxLat, s: minLat - ctxLat, w: minLng - ctxLng, e: maxLng + ctxLng };
+
+  // Detail bbox — only 250 m outside boundary; per-tile filter handles the rest
+  const detLat = DETAIL_BUFFER_M / 111000, detLng = DETAIL_BUFFER_M / (111000 * Math.cos(midLat * Math.PI / 180));
+  const detBbox = { n: maxLat + detLat, s: minLat - detLat, w: minLng - detLng, e: maxLng + detLng };
+
+  const activePrefix = activeMapLayer;
+  const activeUrl = activeMapLayer === 'sat' ? SAT_URL : OSM_URL;
   const tiles = [];
-  for (const z of CACHE_ZOOMS) {
-    const nw = _toTileXY(bbox.n, bbox.w, z);
-    const se = _toTileXY(bbox.s, bbox.e, z);
+
+  // Context overview tiles — 1 km buffer, z14+z15 only; always a handful of tiles
+  for (const z of [14, 15]) {
+    const nw = _toTileXY(ctxBbox.n, ctxBbox.w, z);
+    const se = _toTileXY(ctxBbox.s, ctxBbox.e, z);
     for (let x = nw.x; x <= se.x; x++)
       for (let y = nw.y; y <= se.y; y++)
-        for (const src of SOURCES)
-          tiles.push({ z, x, y, prefix: src.prefix, url: src.url });
+        tiles.push({ z, x, y, prefix: activePrefix, url: activeUrl });
+  }
+
+  // High-detail tiles — iterate the 250 m expanded bbox, include tile only if its centre
+  // is inside the boundary polygon or within 250 m of a boundary edge
+  for (const z of [17, 18, 19]) {
+    const nw = _toTileXY(detBbox.n, detBbox.w, z);
+    const se = _toTileXY(detBbox.s, detBbox.e, z);
+    for (let x = nw.x; x <= se.x; x++) {
+      for (let y = nw.y; y <= se.y; y++) {
+        const { lat, lng } = _tileCenterLL(z, x, y);
+        if (_ptInRings(lat, lng, rings) || distToBoundary({ lat, lng }, rings) <= DETAIL_BUFFER_M)
+          tiles.push({ z, x, y, prefix: activePrefix, url: activeUrl });
+      }
+    }
+  }
+
+  const bboxW = Math.round((maxLng - minLng) * 111000 * Math.cos(midLat * Math.PI / 180));
+  const bboxH = Math.round((maxLat - minLat) * 111000);
+  console.log(`[tilecache] gen=${gen} boundary ${bboxW}×${bboxH}m → ${tiles.length} tiles (z14-z15 ctx + z17-z19 within 250m)`);
+
+  const MAX_TILES = 500;
+  if (tiles.length > MAX_TILES) {
+    console.warn(`[tilecache] ${tiles.length} tiles exceeds cap — skipping download`);
+    _showCacheBar(MAX_TILES, MAX_TILES);
+    const t = document.getElementById('bld-toast') || (() => {
+      const el = document.createElement('div');
+      el.id = 'bld-toast';
+      el.style.cssText = 'position:absolute;bottom:52px;left:50%;transform:translateX(-50%);z-index:1200;color:#fff;font-size:12px;padding:7px 14px;border-radius:20px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+      document.getElementById('map-wrap').appendChild(el);
+      return el;
+    })();
+    t.style.background = '#7f1d1dee';
+    t.textContent = '⚠️ Area too large for offline caching — draw a smaller boundary';
+    t.style.opacity = '1';
+    clearTimeout(t._to);
+    t._to = setTimeout(() => { t.style.opacity = '0'; }, 6000);
+    return;
   }
 
   let done = 0;
   _showCacheBar(0, tiles.length);
 
-  // Fetch with bounded concurrency — skips tiles already in IndexedDB
+  // Fetch with bounded concurrency — skips tiles already in IndexedDB.
+  // Workers check gen on every iteration; if a newer cacheTilesForBoundary call has started
+  // they exit immediately so the old INSPIRE (or previous manual) boundary stops downloading.
   const CONC = 6;
   let idx = 0;
   async function worker() {
     while (idx < tiles.length) {
+      if (gen !== _cacheTileGen) return; // newer boundary set — abandon this batch
       const { z, x, y, prefix, url } = tiles[idx++];
       const key = `${prefix}/${z}/${x}/${y}`;
       if (await _dbGet(key)) { _showCacheBar(++done, tiles.length); continue; }
@@ -909,12 +1179,13 @@ async function cacheTilesForBoundary(rings) {
 // Results are drawn as amber polygons and wired into hasVio for building clearance checks.
 async function fetchBuildings(rings){
   if(!navigator.onLine)return;
+  const gen = ++_buildingFetchGen;
   try{
     const flat=rings.flat();
     const lats=flat.map(p=>p.lat),lngs=flat.map(p=>p.lng);
     const midLat=(Math.min(...lats)+Math.max(...lats))/2;
-    const buf=50/111000; // 50 m lat buffer — building checks need much less than tile cache
-    const bufLng=50/(111000*Math.cos(midLat*Math.PI/180));
+    const buf=15/111000; // 15 m — max building clearance rule (drainage field); no point fetching further
+    const bufLng=15/(111000*Math.cos(midLat*Math.PI/180));
     const s=(Math.min(...lats)-buf).toFixed(7);
     const w=(Math.min(...lngs)-bufLng).toFixed(7);
     const n=(Math.max(...lats)+buf).toFixed(7);
@@ -932,9 +1203,14 @@ async function fetchBuildings(rings){
         if(ring.length>=3)polys.push(ring);
       }
     }
-    buildingPolygons=polys;
+    // Discard stale results if a newer fetchBuildings call has already started
+    if(gen!==_buildingFetchGen)return;
+    // Discard any building whose nearest point to the boundary line is > 15 m —
+    // it cannot trigger a clearance violation for anything placed inside the boundary.
+    buildingPolygons=polys.filter(ring=>ring.some(pt=>distToBoundary(pt,rings)<=15));
     renderBuildings();
     recheckViolations();
+    renderConnections(); // re-route pipes now that building data is available
     autoSave();
     _showBuildingToast(polys.length);
   }catch(_){_showBuildingToast(0,true);}
@@ -947,7 +1223,10 @@ function _showBuildingToast(count,failed=false){
     t.style.cssText='position:absolute;bottom:52px;left:50%;transform:translateX(-50%);z-index:1200;color:#fff;font-size:12px;padding:7px 14px;border-radius:20px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)';
     document.getElementById('map-wrap').appendChild(t);
   }
-  if(failed){
+  if(count===-1){
+    t.style.background='#7f1d1dee';
+    t.textContent='⛔ Cannot place here — inside a building';
+  } else if(failed){
     t.style.background='#7f1d1dee';
     t.textContent='⚠ Could not load building data';
   } else if(count===0){
@@ -988,13 +1267,29 @@ function toggleLayer(){
 
 map.on('click',e=>{
   if(drawingBoundary){addDrawPoint(e.latlng.lat,e.latlng.lng);return;}
+  if(midwayPickMode){_handleMidwayTap(e.latlng.lat,e.latlng.lng);return;}
   if(!selectedSymbolId)return;
   const {lat,lng}=e.latlng;
   const sym=SYM[selectedSymbolId];
   if(SINGLE_INSTANCE.has(sym.id)&&placedMarkers.some(m=>m.symbolId===sym.id))return;
 
+  // Block placement inside a building footprint
+  if(_inAnyBuilding(lat,lng)){
+    _showBuildingToast(-1); // reuse toast infrastructure with a custom message
+    return;
+  }
+
   if(sym.id==='sewage_treatment_plant'){
     openStpPeModal(lat,lng);
+    return;
+  }
+  if(sym.id==='drainage_field'){
+    if(selectedPlantPE!==null){
+      const df=DRAIN_FIELD_SIZES[selectedPlantPE];
+      addMarker({lat,lng,symbolId:'drainage_field',customWidth:df.width,customDepth:df.depth});
+    } else {
+      openDrainFieldPeModal(lat,lng);
+    }
     return;
   }
   if(sym.dims?.userDefined){
@@ -1207,6 +1502,7 @@ function renderMarker(m){
   else if(sym.id==='drainage_field'){iSize=[28,55];iAnchor=[14,27];}
   else if(sym.id==='kiosk'){iSize=[42,32];iAnchor=[21,16];}
   else if(sym.small){iSize=[26,26];iAnchor=[13,13];}
+  else if(sym.id==='pipe_junction'){iSize=[16,16];iAnchor=[8,8];}
   else{iSize=[34,34];iAnchor=[17,17];}
   let icLabel=null;
   if(sym.id==='last_inspection_chamber'||sym.id==='existing_inspection_chamber'){
@@ -1236,9 +1532,7 @@ function renderMarker(m){
     }
     renderConnections();
     autoSave();
-    if(m.symbolId==='sewage_treatment_plant'){
-      maybeShowStpIcDialog(()=>{renderConnections();autoSave();});
-    }
+    if(m.symbolId==='sewage_treatment_plant') recheckStpIcOnDrag(m);
   });
   mk.on('click',e=>{
     L.DomEvent.stopPropagation(e);
@@ -1326,8 +1620,15 @@ function renderConnections(zoomOnly=false){
     // waypoints lie on the old line — regenerate as straight line. Skip this check
     // on zoom-only renders so user-dragged waypoints survive zoom in/out.
     const endpointsMoved=!zoomOnly&&ex&&(dist(s,ex[0])>0.5||dist(e,ex[ex.length-1])>0.5);
-    if(middle&&middle.length>0&&!endpointsMoved){
+    if(endpointsMoved) manualWaypointConns.delete(c.id); // marker moved → reset manual flag so routing reruns
+
+    const isManual = manualWaypointConns.has(c.id);
+    if(isManual && middle && middle.length>0 && !endpointsMoved){
+      // User-dragged waypoints — preserve them as-is
       nw[c.id]=[s,...middle,e];
+    } else if(c.type==='gravity' && c.coords.length>2){
+      // Auto-routed gravity pipe — always use the freshly computed path from computeConns
+      nw[c.id]=[...c.coords];
     } else {
       const pts=interpPts(s,e,sp);
       // Pressure/cable pipes always get at least one draggable midpoint node
@@ -1355,19 +1656,41 @@ function renderConnections(zoomOnly=false){
     // Control dots — not shown on existing infrastructure pipes
     const viols=bendViolations[c.id]??new Set();
     const dots=[];
-    if(c.existing){}else
+    if(c.existing){
+      // Existing pipes: non-draggable bend-IC icons only
+      if(c.type==='gravity'){
+        for(let i=1;i<path.length-1;i++){
+          if(_angleDeg(path[i-1],path[i],path[i+1])>FOUL_BEND_MAX_DEG){
+            const html=pinHtml(SYM.new_inspection_chamber_small,false,0,'IC');
+            const icon=L.divIcon({className:'',html,iconSize:[34,34],iconAnchor:[17,17]});
+            dots.push(L.marker([path[i].lat,path[i].lng],{icon,interactive:false,pane:'dotPane'}).addTo(map));
+          }
+        }
+      }
+    } else
     for(let i=1;i<path.length-1;i++){
-      const pt=path[i],isV=viols.has(i),dc=isV?'#DC2626':c.color;
-      const dIcon=L.divIcon({className:'',
-        html:`<div style="width:14px;height:14px;border-radius:50%;border:2px solid ${dc};background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center"><div style="width:5px;height:5px;border-radius:50%;background:${dc}"></div></div>`,
-        iconSize:[14,14],iconAnchor:[7,7]});
-      const dm=L.marker([pt.lat,pt.lng],{icon:dIcon,draggable:true,zIndexOffset:50,pane:'dotPane'}).addTo(map);
+      const pt=path[i];
+      const isBendIc=c.type==='gravity'&&_angleDeg(path[i-1],pt,path[i+1])>FOUL_BEND_MAX_DEG;
+      let dm;
+      if(isBendIc){
+        // Show 300mm inspection chamber icon at this bend vertex (draggable)
+        const html=pinHtml(SYM.new_inspection_chamber_small,false,0,'IC');
+        const icon=L.divIcon({className:'',html,iconSize:[34,34],iconAnchor:[17,17]});
+        dm=L.marker([pt.lat,pt.lng],{icon,draggable:true,zIndexOffset:60,pane:'dotPane'}).addTo(map);
+      } else {
+        const isV=viols.has(i),dc=isV?'#DC2626':c.color;
+        const dIcon=L.divIcon({className:'',
+          html:`<div style="width:14px;height:14px;border-radius:50%;border:2px solid ${dc};background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center"><div style="width:5px;height:5px;border-radius:50%;background:${dc}"></div></div>`,
+          iconSize:[14,14],iconAnchor:[7,7]});
+        dm=L.marker([pt.lat,pt.lng],{icon:dIcon,draggable:true,zIndexOffset:50,pane:'dotPane'}).addTo(map);
+      }
       (function(cid,idx,dm2){
         dm2.on('dragend',ev=>{
           const {lat,lng}=ev.target.getLatLng();
           const wp=connectionWaypoints[cid]??[];
           const np=[...wp];np[idx]={lat,lng};
           connectionWaypoints[cid]=np;
+          manualWaypointConns.add(cid); // user is taking manual control of this pipe
           // Check deflection for gravity
           if(c.type==='gravity'){
             const vset=new Set();
@@ -1434,6 +1757,9 @@ function pinHtml(sym,isVio,rot,labelOverride){
   const bc=isVio?'#DC2626':sym.color;
   const tr=rot?`transform:rotate(${rot}deg);`:'';
   const pulse=isVio?'animation:vio-pulse 1s ease-in-out infinite;':'';
+  if(sym.id==='pipe_junction'){
+    return`<div style="width:16px;height:16px;border-radius:8px;background:#92400E;box-shadow:0 1px 4px rgba(0,0,0,.55);${pulse}"></div>`;
+  }
   if(sym.id==='sewage_treatment_plant'){
     return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:space-evenly;padding:0 4px;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}${pulse}">
       <div style="width:14px;height:14px;border-radius:50%;background:${sym.color};border:1.5px solid #fff"></div>
@@ -1524,14 +1850,23 @@ function selectPE(pe){
   autoSave();
 }
 
-function openStpPeModal(lat,lng){
-  stpPlacePending={lat,lng};
+function _openPeModal(label,onConfirmFn){
   const btns=document.getElementById('stp-pe-btns');
   btns.innerHTML=PLANT_SIZES.map(ps=>{
     const active=ps.pe===selectedPlantPE;
-    return`<button class="dim-btn${active?' pri':''}" style="min-width:68px;font-size:15px;font-weight:700;padding:11px 0${active?';background:#16A34A':''}" onclick="confirmStpPe(${ps.pe})">${ps.pe} PE</button>`;
+    return`<button class="dim-btn${active?' pri':''}" style="min-width:68px;font-size:15px;font-weight:700;padding:11px 0${active?';background:#16A34A':''}" onclick="${onConfirmFn}(${ps.pe})">${ps.pe} PE</button>`;
   }).join('');
+  const title=document.getElementById('stp-pe-title');
+  if(title)title.textContent=label;
   showModal('stp-pe-modal');
+}
+function openStpPeModal(lat,lng){
+  stpPlacePending={lat,lng};
+  _openPeModal('Select plant size','confirmStpPe');
+}
+function openDrainFieldPeModal(lat,lng){
+  drainFieldPlacePending={lat,lng};
+  _openPeModal('Select plant size for drainage field','confirmDrainFieldPe');
 }
 function confirmStpPe(pe){
   if(!stpPlacePending)return;
@@ -1542,13 +1877,22 @@ function confirmStpPe(pe){
   const ps=PLANT_SIZES.find(p=>p.pe===pe);
   addMarker({lat,lng,symbolId:'sewage_treatment_plant',customWidth:ps.length/1000,customDepth:ps.width/1000});
 }
-function cancelStpPe(){stpPlacePending=null;hideModal('stp-pe-modal');}
+function confirmDrainFieldPe(pe){
+  if(!drainFieldPlacePending)return;
+  const{lat,lng}=drainFieldPlacePending;
+  drainFieldPlacePending=null;
+  hideModal('stp-pe-modal');
+  selectPE(pe);
+  const df=DRAIN_FIELD_SIZES[pe];
+  addMarker({lat,lng,symbolId:'drainage_field',customWidth:df.width,customDepth:df.depth});
+}
+function cancelStpPe(){stpPlacePending=null;drainFieldPlacePending=null;hideModal('stp-pe-modal');}
 
 // ── Legend ────────────────────────────────────────────────────────────────────
 function renderLegend(){
   const dimLabel=s=>{
     if(!s.dims)return'Point';
-    if(s.id==='drainage_field')return'Figure-8 · 5×5 m default (variable)';
+    if(s.id==='drainage_field')return selectedPlantPE?`Figure-8 · ${DRAIN_FIELD_SIZES[selectedPlantPE].width}×${DRAIN_FIELD_SIZES[selectedPlantPE].depth} m (${selectedPlantPE} PE)`:'Figure-8 · sized by PE';
     if(s.dims.type==='circle'){const mm=(s.dims.radius*2*1000).toFixed(0);return`⌀ ${mm} mm${s.dims.userDefined?' (variable)':''}`;}
     const w=s.dims.width>=1?`${s.dims.width} m`:`${s.dims.width*1000} mm`;
     const d=s.dims.depth>=1?`${s.dims.depth} m`:`${s.dims.depth*1000} mm`;
@@ -1575,7 +1919,7 @@ function renderPalette(){
   ['existing','new'].forEach(cat=>{
     const row=document.getElementById(`pal-${cat}`);
     row.innerHTML='';
-    SYMBOLS.filter(s=>s.category===cat).forEach(s=>{
+    SYMBOLS.filter(s=>s.category===cat&&!s.paletteHidden).forEach(s=>{
       const isUsed=SINGLE_INSTANCE.has(s.id)&&placedIds.has(s.id);
       const item=document.createElement('div');
       item.className='pal-item'+(selectedSymbolId===s.id?' sel':'')+(isUsed?' used':'');
@@ -1754,7 +2098,7 @@ function clearAll(){
     map.removeLayer(markerLayers[id]);delete markerLayers[id];
   });
   placedMarkers=[];violatingIds=new Set();confirmingId=null;
-  connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};stpTargetIcId=null;
+  connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};stpTargetIcId=null;manualWaypointConns.clear();
   promotedLastIcId=null;icSuggestionDismissed=false;
   suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;
   renderConnections();
