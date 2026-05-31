@@ -46,6 +46,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 #load-card{background:#1c1c1e;border-radius:12px;padding:18px 22px;display:flex;align-items:center;gap:12px;font-size:14px}
 .spinner{width:20px;height:20px;border:2.5px solid #333;border-top-color:#0a84ff;border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+@keyframes vio-pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.8)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
 
 #palette{background:#1c1c1e;border-top:1px solid #333;padding:10px 0 calc(10px + env(safe-area-inset-bottom));flex-shrink:0}
 #pal-scroll{display:flex;overflow-x:auto;padding:0 14px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
@@ -1245,18 +1246,19 @@ function renderConnections(zoomOnly=false){
 function pinHtml(sym,isVio,rot,labelOverride){
   const bc=isVio?'#DC2626':sym.color;
   const tr=rot?`transform:rotate(${rot}deg);`:'';
+  const pulse=isVio?'animation:vio-pulse 1s ease-in-out infinite;':'';
   if(sym.id==='sewage_treatment_plant'){
-    return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:space-evenly;padding:0 4px;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}">
+    return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:space-evenly;padding:0 4px;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}${pulse}">
       <div style="width:14px;height:14px;border-radius:50%;background:${sym.color};border:1.5px solid #fff"></div>
       <div style="width:14px;height:14px;border-radius:50%;background:${sym.color};border:1.5px solid #fff"></div></div>`;
   }
   if(sym.id==='existing_septic_tank'){
-    return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}">
+    return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}${pulse}">
       <div style="background:${sym.color};border-radius:3px;padding:2px 7px;color:#fff;font-size:12px;font-weight:700;letter-spacing:-0.5px">ST</div></div>`;
   }
   if(sym.id==='drainage_field'){
     const c=isVio?'#DC2626':'#4D7C0F';
-    return`<div style="background:rgba(255,255,255,.92);border-radius:4px;padding:3px;display:flex;flex-direction:column;align-items:center;gap:2px;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}">
+    return`<div style="background:rgba(255,255,255,.92);border-radius:4px;padding:3px;display:flex;flex-direction:column;align-items:center;gap:2px;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}${pulse}">
       <div style="width:13px;height:5px;border-radius:2px;background:${c}"></div>
       <div style="width:22px;height:13px;display:flex;justify-content:space-between"><div style="width:5px;height:13px;border-radius:2px;background:${c}"></div><div style="width:5px;height:13px;border-radius:2px;background:${c}"></div></div>
       <div style="width:13px;height:5px;border-radius:2px;background:${c}"></div>
@@ -1264,14 +1266,14 @@ function pinHtml(sym,isVio,rot,labelOverride){
       <div style="width:13px;height:5px;border-radius:2px;background:${c}"></div></div>`;
   }
   if(sym.id==='kiosk'){
-    return`<div style="width:42px;height:32px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45)">
+    return`<div style="width:42px;height:32px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${pulse}">
       <div style="width:34px;height:24px;border-radius:3px;background:${sym.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">K</div></div>`;
   }
   const label=labelOverride||{existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[sym.id]||'?';
   const sz=sym.small?26:34,br=sz/2,bw=sym.small?2:2.5,inner=sym.small?18:24;
   // If label is a number, shrink font slightly so e.g. "10" fits in the circle
   const fs=labelOverride&&labelOverride.length>1?9:11;
-  return`<div style="width:${sz}px;height:${sz}px;border-radius:${br}px;border:${bw}px solid ${bc};background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45)">
+  return`<div style="width:${sz}px;height:${sz}px;border-radius:${br}px;border:${bw}px solid ${bc};background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${pulse}">
     <div style="width:${inner}px;height:${inner}px;border-radius:${inner/2}px;background:${sym.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:${fs}px;font-weight:700;letter-spacing:-0.5px">${label}</div></div>`;
 }
 
