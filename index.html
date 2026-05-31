@@ -652,10 +652,10 @@ function maybeShowStpIcDialog(cb){
   const existST=placedMarkers.find(m=>m.symbolId==='existing_septic_tank');
   if(!existST){cb();return;}
   const nums=icNumbering();
-  if(nums.length===0){cb();return;}
+  if(nums.length<=1){cb();return;} // only one IC — no choice needed
   const btns=document.getElementById('stp-ic-btns');
   btns.innerHTML=nums.map(({marker,number})=>
-    `<button class="dim-btn pri" style="min-width:52px;font-size:20px;font-weight:700;padding:10px 0" onclick="stpIcChoose('${marker.id}')">${number}</button>`
+    `<button class="dim-btn pri" style="min-width:64px;font-size:16px;font-weight:700;padding:10px 0" onclick="stpIcChoose('${marker.id}')">IC${number}</button>`
   ).join('');
   pendingStpIcCb=cb;
   showModal('stp-ic-modal');
@@ -728,7 +728,7 @@ function computeConns(markers){
     const [A,B]=stpFaces(st);
     const ic2={lat:ic.lat,lng:ic.lng};
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
-    out.push({id:'ic-st',coords:[icEdgePt(ic,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
+    out.push({id:'ic-st',coords:[icEdgePt(ic,stIn),stIn],color:'#92400E',width:3,type:'gravity',existing:true});
   }
   if(existIcs.length){
     const remaining=[...existIcs];
@@ -742,7 +742,7 @@ function computeConns(markers){
       }
       const next=remaining.splice(best,1)[0];
       const e0=icEdgePt(prev,next),e1=icEdgePt(next,prev);
-      out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity'});
+      out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity',existing:true});
       prev=next;
     }
   }
@@ -1105,7 +1105,7 @@ function renderMarker(m){
   let icLabel=null;
   if(sym.id==='last_inspection_chamber'||sym.id==='existing_inspection_chamber'){
     const entry=icNumbering().find(e=>e.marker.id===m.id);
-    if(entry)icLabel=String(entry.number);
+    if(entry)icLabel=`IC${entry.number}`;
   }
   const icon=L.divIcon({className:'',html:pinHtml(sym,isVio,rot,icLabel),iconSize:iSize,iconAnchor:iAnchor});
   const mk=L.marker([m.lat,m.lng],{icon,draggable:true,zIndexOffset:100}).addTo(map);
@@ -1246,9 +1246,10 @@ function renderConnections(zoomOnly=false){
     const line=L.polyline(lls,{color:c.color,weight:c.width,dashArray:c.dashed?'8 6':null,pane:'connPane'}).addTo(map);
     connLines[c.id]=line;
 
-    // Control dots
+    // Control dots — not shown on existing infrastructure pipes
     const viols=bendViolations[c.id]??new Set();
     const dots=[];
+    if(c.existing){}else
     for(let i=1;i<path.length-1;i++){
       const pt=path[i],isV=viols.has(i),dc=isV?'#DC2626':c.color;
       const dIcon=L.divIcon({className:'',
@@ -1352,7 +1353,7 @@ function pinHtml(sym,isVio,rot,labelOverride){
   const label=labelOverride||{existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[sym.id]||'?';
   const sz=sym.small?26:34,br=sz/2,bw=sym.small?2:2.5,inner=sym.small?18:24;
   // If label is a number, shrink font slightly so e.g. "10" fits in the circle
-  const fs=labelOverride&&labelOverride.length>1?9:11;
+  const fs=labelOverride?(labelOverride.length<=2?11:labelOverride.length===3?8:7):11;
   return`<div style="width:${sz}px;height:${sz}px;border-radius:${br}px;border:${bw}px solid ${bc};background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${pulse}">
     <div style="width:${inner}px;height:${inner}px;border-radius:${inner/2}px;background:${sym.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:${fs}px;font-weight:700;letter-spacing:-0.5px">${label}</div></div>`;
 }
