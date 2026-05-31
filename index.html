@@ -1027,7 +1027,10 @@ function renderConnections(){
     const sp=c.type==='gravity'?GRAV_SPACING:PRES_SPACING;
     const ex=connectionWaypoints[c.id];
     const middle=ex?ex.slice(1,-1):null;
-    if(middle&&middle.length>0){
+    // If either endpoint has moved (STP rotated, marker dragged, zoom changed) the
+    // stored middle waypoints lie on the old line — regenerate as straight line instead.
+    const endpointsMoved=ex&&(dist(s,ex[0])>0.5||dist(e,ex[ex.length-1])>0.5);
+    if(middle&&middle.length>0&&!endpointsMoved){
       nw[c.id]=[s,...middle,e];
     } else {
       const pts=interpPts(s,e,sp);
