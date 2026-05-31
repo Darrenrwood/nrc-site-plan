@@ -649,10 +649,8 @@ function icNumbering(){
 }
 
 function maybeShowStpIcDialog(cb){
-  const existST=placedMarkers.find(m=>m.symbolId==='existing_septic_tank');
-  if(!existST){cb();return;}
   const nums=icNumbering();
-  if(nums.length<=1){cb();return;} // only one IC — no choice needed
+  if(nums.length<=1){cb();return;} // zero or one IC — no choice needed
   const btns=document.getElementById('stp-ic-btns');
   btns.innerHTML=nums.map(({marker,number})=>
     `<button class="dim-btn pri" style="min-width:64px;font-size:16px;font-weight:700;padding:10px 0" onclick="stpIcChoose('${marker.id}')">IC${number}</button>`
