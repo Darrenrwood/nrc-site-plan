@@ -918,7 +918,29 @@ async function fetchBuildings(rings){
     renderBuildings();
     recheckViolations();
     autoSave();
-  }catch(_){}
+    _showBuildingToast(polys.length);
+  }catch(_){_showBuildingToast(0,true);}
+}
+function _showBuildingToast(count,failed=false){
+  let t=document.getElementById('bld-toast');
+  if(!t){
+    t=document.createElement('div');
+    t.id='bld-toast';
+    t.style.cssText='position:absolute;bottom:52px;left:50%;transform:translateX(-50%);z-index:1200;color:#fff;font-size:12px;padding:7px 14px;border-radius:20px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+    document.getElementById('map-wrap').appendChild(t);
+  }
+  if(failed){
+    t.style.background='#7f1d1dee';
+    t.textContent='⚠ Could not load building data';
+  } else if(count===0){
+    t.style.background='#3A3A3Cee';
+    t.textContent='ℹ No buildings found near boundary';
+  } else {
+    t.style.background='#15803dee';
+    t.textContent=`✓ ${count} building${count===1?'':'s'} loaded`;
+  }
+  clearTimeout(t._timer);
+  t._timer=setTimeout(()=>{if(t.parentNode)t.remove();},4000);
 }
 
 // ── Map init ──────────────────────────────────────────────────────────────────
