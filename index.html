@@ -156,7 +156,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div id="title-badge">🏠 <span id="title-badge-text"></span></div>
     <div id="plant-badge">⚙ <span id="plant-badge-text"></span></div>
 
-    <div class="banner" id="grav-banner">⚠ Gravity pipe exceeds 45 m — add a small IC at least every 22 m</div>
+    <div class="banner" id="grav-banner" style="cursor:pointer" onclick="dismissGravBanner()">⚠ Gravity pipe exceeds 45 m — add a small IC at least every 22 m <span style="margin-left:auto;font-size:16px;opacity:.7">×</span></div>
     <div class="banner" id="grav-ic-banner" style="color:#86efac">✓ ICs added — drag any of them to fine-tune their position</div>
     <div class="banner" id="vio-banner" onclick="dismissVio()">⚠ <span id="vio-text">Placement is outside recommended parameters — tap to confirm</span></div>
     <div class="banner" id="midway-banner" style="display:none;color:#F59E0B">⊕ Tap the map to set the join point — it will snap to the nearest existing pipe</div>
@@ -449,6 +449,7 @@ let icSuggestionDismissed = false; // suppress re-prompt after user clicks No
 let suggestPositions = [];     // [{lat,lng}] pending gravity-pipe IC suggestion positions
 let gravSuggestShown = false;  // modal has fired for current long-pipe state
 let gravSuggestDeclined = false; // user said No — suppress "?" markers until pipe is fixed
+let gravBannerDismissed = false; // user tapped × on the banner — hide until pipe changes
 let gravIcBannerTimer = null;  // auto-dismiss timer for the "ICs added" banner
 let icAttachments = {};        // {[icId]: {connId, t}} — fraction along pipe when snapped
 let icOriginConn  = {};        // {[icId]: connId} — persists after manual drag for cascade-delete
@@ -1739,7 +1740,7 @@ function renderConnections(zoomOnly=false){
                 placedMarkers.some(m=>m.symbolId==='existing_septic_tank');
   document.getElementById('add-ic-st-btn').style.display=hasIcSt?'flex':'none';
 
-  document.getElementById('grav-banner').classList.toggle('vis',hasLong&&gravSuggestDeclined);
+  document.getElementById('grav-banner').classList.toggle('vis',hasLong&&gravSuggestDeclined&&!gravBannerDismissed);
   if(hasLong&&suggestPositions.length&&!gravSuggestShown){
     // Don't show gravity IC suggestion while the user is still answering the
     // STP/IC insertion question, or is in the process of placing the new IC.
@@ -1749,7 +1750,7 @@ function renderConnections(zoomOnly=false){
       setTimeout(()=>showModal('grav-suggest-modal'),250);
     }
   }
-  if(!hasLong){gravSuggestShown=false;gravSuggestDeclined=false;}
+  if(!hasLong){gravSuggestShown=false;gravSuggestDeclined=false;gravBannerDismissed=false;}
 }
 
 // ── Pin HTML ──────────────────────────────────────────────────────────────────
@@ -1971,6 +1972,7 @@ function acceptGravSuggest(){
     showGravIcBanner();
   }
 }
+function dismissGravBanner(){gravBannerDismissed=true;document.getElementById('grav-banner').classList.remove('vis');}
 function dismissGravSuggest(){
   hideModal('grav-suggest-modal');
   suggestCircles.forEach(c=>map.removeLayer(c));
