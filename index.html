@@ -389,6 +389,7 @@ let gravSuggestShown = false;  // modal has fired for current long-pipe state
 let gravSuggestDeclined = false; // user said No — suppress "?" markers until pipe is fixed
 let gravIcBannerTimer = null;  // auto-dismiss timer for the "ICs added" banner
 let icAttachments = {};        // {[icId]: {connId, t}} — fraction along pipe when snapped
+let icOriginConn  = {};        // {[icId]: connId} — persists after manual drag for cascade-delete
 
 // ── Leaflet layers ────────────────────────────────────────────────────────────
 let map, boundaryLayer = null;
@@ -579,7 +580,7 @@ function applyIcSnaps(baseConns){
       // Record which pipe this IC is on and how far along it (0–1) so it can
       // follow the pipe when connected markers are moved or the STP is rotated.
       const _s=path[0],_e=path[path.length-1],_total=dist(_s,_e);
-      if(_total>0.1)icAttachments[ic.id]={connId:c.id,t:dist(_s,{lat:ic.lat,lng:ic.lng})/_total};
+      if(_total>0.1){icAttachments[ic.id]={connId:c.id,t:dist(_s,{lat:ic.lat,lng:ic.lng})/_total};icOriginConn[ic.id]=c.id;}
       const beforePts=path.slice(0,splitIdx+1);
       const afterPts=path.slice(splitIdx+1);
       const eIn=icEdgePt(ic,beforePts[beforePts.length-1]);
@@ -973,7 +974,7 @@ function renderMarker(m){
       for(const key of Object.keys(connectionWaypoints)){
         if(key.includes(`-sn-${m.id}-`))delete connectionWaypoints[key];
       }
-      delete icAttachments[m.id]; // user repositioned it manually — detach from pipe
+      delete icAttachments[m.id]; // detach from movement-following; icOriginConn kept for cascade-delete
     }
     renderMarker(m);
     renderConnections();
@@ -997,19 +998,21 @@ function removeMarker(id){
   if(confirmingId===id)confirmingId=null;
   if(promotedLastIcId===id){promotedLastIcId=null;icSuggestionDismissed=false;}
   delete icAttachments[id];
+  delete icOriginConn[id];
   if(removedSymbolId==='sewage_treatment_plant'){icSuggestionDismissed=false;}
   if(footprintLayers[id]){footprintLayers[id].forEach(l=>map.removeLayer(l));delete footprintLayers[id];}
   if(markerLayers[id]){map.removeLayer(markerLayers[id]);delete markerLayers[id];}
-  // Cascade: remove new ICs whose pipe run no longer exists after this deletion
+  // Cascade: remove new ICs (including manually-repositioned ones) whose pipe run no longer exists
   const remainingConns=computeConns(placedMarkers);
   const remainingConnIds=new Set(remainingConns.map(c=>c.id));
-  for(const [icId,att] of Object.entries(icAttachments)){
-    if(!remainingConnIds.has(att.connId)){
+  for(const [icId,connId] of Object.entries(icOriginConn)){
+    if(!remainingConnIds.has(connId)){
       placedMarkers=placedMarkers.filter(m=>m.id!==icId);
       violatingIds.delete(icId);
       if(footprintLayers[icId]){footprintLayers[icId].forEach(l=>map.removeLayer(l));delete footprintLayers[icId];}
       if(markerLayers[icId]){map.removeLayer(markerLayers[icId]);delete markerLayers[icId];}
       delete icAttachments[icId];
+      delete icOriginConn[icId];
     }
   }
   renderConnections();
@@ -1042,7 +1045,7 @@ function renderConnections(zoomOnly=false){
   for(const [icId,att] of Object.entries(icAttachments)){
     const ic2=placedMarkers.find(m=>m.id===icId);
     const conn=baseConns.find(c=>c.id===att.connId);
-    if(!ic2||!conn){delete icAttachments[icId];continue;}
+    if(!ic2||!conn){delete icAttachments[icId];delete icOriginConn[icId];continue;}
     const s=conn.coords[0],e=conn.coords[conn.coords.length-1];
     const t=Math.max(0,Math.min(1,att.t));
     ic2.lat=s.lat+t*(e.lat-s.lat);
@@ -1466,7 +1469,7 @@ function clearAll(){
     map.removeLayer(markerLayers[id]);delete markerLayers[id];
   });
   placedMarkers=[];violatingIds=new Set();confirmingId=null;
-  connectionWaypoints={};bendViolations={};
+  connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};
   promotedLastIcId=null;icSuggestionDismissed=false;
   suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;
   renderConnections();
