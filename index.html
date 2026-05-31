@@ -760,7 +760,9 @@ function drainFace(m,target){
   ];
   return faces.reduce((b,f)=>_distM(f,target)<_distM(b,target)?f:b);
 }
-const SNAP_PX=20;
+const SNAP_PX=20;      // kept for any legacy pixel-space UI hit-testing only
+const SNAP_M=5;        // real-world snap threshold for IC-to-pipe attachment (metres)
+const ENDPOINT_M=2;    // don't split a pipe if IC is within this distance of an endpoint
 
 function icEdgePt(ic,towardPt){
   const cl=Math.cos(ic.lat*Math.PI/180);
@@ -788,31 +790,27 @@ function applyIcSnaps(baseConns){
   if(!ics.length)return baseConns;
   const conns=[...baseConns];
   for(const ic of ics){
-    const icPx=map.latLngToContainerPoint([ic.lat,ic.lng]);
+    const icLL={lat:ic.lat,lng:ic.lng};
     for(let ci=0;ci<conns.length;ci++){
       const c=conns[ci];
       if(c.type!=='gravity'||c.existing)continue;
       if(c.id.includes(`-sn-${ic.id}-`))continue;
       const path=connectionWaypoints[c.id]??c.coords;
-      // Find closest point on this pipe to the IC
-      const ep0=map.latLngToContainerPoint([path[0].lat,path[0].lng]);
-      const epN=map.latLngToContainerPoint([path[path.length-1].lat,path[path.length-1].lng]);
+      // Find closest segment on this pipe to the IC — all distances in real-world metres
       let minDist=Infinity,splitIdx=0;
       for(let i=0;i<path.length-1;i++){
-        const aPx=map.latLngToContainerPoint([path[i].lat,path[i].lng]);
-        const bPx=map.latLngToContainerPoint([path[i+1].lat,path[i+1].lng]);
-        const d=pxSegDist(icPx,aPx,bPx);
+        const d=distToSeg(icLL,path[i],path[i+1]);
         if(d<minDist){minDist=d;splitIdx=i;}
       }
-      // IC belongs to this pipe if it's near it, or was previously assigned to it
-      const onThisPipe=minDist<=SNAP_PX||icOriginConn[ic.id]===c.id;
+      // IC belongs to this pipe if it's within SNAP_M, or was previously assigned to it
+      const onThisPipe=minDist<=SNAP_M||icOriginConn[ic.id]===c.id;
       if(!onThisPipe)continue;
       // Always record pipe ownership — needed for cascade-delete when the pipe disappears
       const _s=path[0],_e=path[path.length-1],_total=dist(_s,_e);
-      if(_total>0.1){icAttachments[ic.id]={connId:c.id,t:dist(_s,{lat:ic.lat,lng:ic.lng})/_total};icOriginConn[ic.id]=c.id;}
+      if(_total>0.1){icAttachments[ic.id]={connId:c.id,t:dist(_s,icLL)/_total};icOriginConn[ic.id]=c.id;}
       // Don't split if IC is at/near an endpoint — avoid a near-zero sub-connection
-      if(Math.hypot(icPx.x-ep0.x,icPx.y-ep0.y)<SNAP_PX)break;
-      if(Math.hypot(icPx.x-epN.x,icPx.y-epN.y)<SNAP_PX)break;
+      if(dist(icLL,path[0])<ENDPOINT_M)break;
+      if(dist(icLL,path[path.length-1])<ENDPOINT_M)break;
       const beforePts=path.slice(0,splitIdx+1);
       const afterPts=path.slice(splitIdx+1);
       const eIn=icEdgePt(ic,beforePts[beforePts.length-1]);
@@ -2148,18 +2146,23 @@ function acceptIcSuggestion(){
   const ic=placedMarkers.find(m=>m.symbolId==='last_inspection_chamber');
   const st=placedMarkers.find(m=>m.symbolId==='existing_septic_tank');
   if(!stp||!ic||!st)return;
-  // Find the nearest point along the ic-st path to the STP
+  // Find the nearest point along the ic-st path to the STP (all in real-world metres)
   const path=connectionWaypoints['ic-st']??[{lat:ic.lat,lng:ic.lng},{lat:st.lat,lng:st.lng}];
-  const stpPx=map.latLngToContainerPoint([stp.lat,stp.lng]);
+  const stpLL={lat:stp.lat,lng:stp.lng};
   let bestDist=Infinity,bestPt=null;
   for(let i=0;i<path.length-1;i++){
-    const aPx=map.latLngToContainerPoint([path[i].lat,path[i].lng]);
-    const bPx=map.latLngToContainerPoint([path[i+1].lat,path[i+1].lng]);
-    const dx=bPx.x-aPx.x,dy=bPx.y-aPx.y,lsq=dx*dx+dy*dy;
-    const t=lsq>0.01?Math.max(0,Math.min(1,((stpPx.x-aPx.x)*dx+(stpPx.y-aPx.y)*dy)/lsq)):0;
-    const nearPx={x:aPx.x+t*dx,y:aPx.y+t*dy};
-    const d=Math.hypot(stpPx.x-nearPx.x,stpPx.y-nearPx.y);
-    if(d<bestDist){bestDist=d;bestPt=map.containerPointToLatLng(nearPx);}
+    const a=path[i],b=path[i+1];
+    const cl=Math.cos(a.lat*Math.PI/180);
+    const ax=(a.lng-stpLL.lng)*111319.9*cl,ay=(a.lat-stpLL.lat)*111319.9;
+    const bx=(b.lng-stpLL.lng)*111319.9*cl,by=(b.lat-stpLL.lat)*111319.9;
+    const dx=bx-ax,dy=by-ay,lsq=dx*dx+dy*dy;
+    const t=lsq>0.0001?Math.max(0,Math.min(1,(-ax*dx+-ay*dy)/lsq)):0;
+    const nearM={x:ax+t*dx,y:ay+t*dy};
+    const d=Math.hypot(nearM.x,nearM.y);
+    if(d<bestDist){
+      bestDist=d;
+      bestPt={lat:stpLL.lat+nearM.y/111319.9,lng:stpLL.lng+nearM.x/(111319.9*cl)};
+    }
   }
   if(!bestPt)return;
   // Set promotedLastIcId before addMarker so renderConnections inside it already
