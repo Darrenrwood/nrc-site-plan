@@ -1710,18 +1710,14 @@ function renderConnections(zoomOnly=false){
       // User-dragged waypoints — preserve them as-is
       nw[c.id]=[s,...middle,e];
     } else if(c.type==='gravity' && c.coords.length>2){
-      // Auto-routed gravity pipe. On zoom-only renders, keep the existing path
-      // because stpFaces/icEdgePt use pixel offsets that shift at different zoom
-      // levels — recomputing can fail the clearance check and fall back to a
-      // straight line through a building.
-      if(zoomOnly && ex){
-        nw[c.id]=ex;
-      } else {
-        nw[c.id]=[...c.coords];
-      }
+      // Dijkstra routing succeeded — always use the fresh result, even on zoom.
+      // This lets a previously-failing route (straight line) get corrected as soon
+      // as the face positions shift into a routable configuration on zoom.
+      nw[c.id]=[...c.coords];
     } else {
-      // On zoom-only renders, preserve any existing multi-point gravity path for
-      // the same reason (pixel-dependent endpoints may have moved slightly).
+      // Routing returned a straight-line fallback. On zoom-only renders, preserve
+      // whatever path we had before so a previously successful route isn't replaced
+      // by a straight line through a building due to a transient face-position failure.
       if(zoomOnly && ex && ex.length>2 && c.type==='gravity'){
         nw[c.id]=ex;
       } else {
@@ -1812,17 +1808,22 @@ function renderConnections(zoomOnly=false){
         hasLong=true;
         if(!gravSuggestDeclined){
           let d=0,next=22;
+          const pathStart=path[0],pathEnd=path[path.length-1];
           for(let i=0;i<path.length-1;i++){
             const a=path[i],b=path[i+1],sl=dist(a,b);
             while(next<=d+sl){
               const t=(next-d)/sl;
               const pt={lat:a.lat+t*(b.lat-a.lat),lng:a.lng+t*(b.lng-a.lng)};
+              next+=22; // always advance spacing regardless of whether we place
+              // Skip if within 10m of either endpoint (STP face or existing IC face)
+              if(dist(pt,pathStart)<10||dist(pt,pathEnd)<10)continue;
+              // Skip if position falls inside a building
+              if(_inAnyBuilding(pt.lat,pt.lng))continue;
               const qIcon=L.divIcon({className:'',
                 html:`<div style="width:30px;height:30px;border-radius:50%;background:#16A34A;border:2.5px dashed rgba(255,255,255,0.8);box-shadow:0 2px 6px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:17px;font-weight:800;line-height:1">?</div>`,
                 iconSize:[30,30],iconAnchor:[15,15]});
               suggestCircles.push(L.marker([pt.lat,pt.lng],{icon:qIcon,interactive:false,pane:'dotPane'}).addTo(map));
               suggestPositions.push({lat:pt.lat,lng:pt.lng});
-              next+=22;
             }
             d+=sl;
           }
