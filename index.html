@@ -1643,11 +1643,11 @@ function openMaterials() {
         const isLen = r.unit === null;
         const disp  = isLen ? r.value : `${r.value} ${r.value === '1' ? r.unit : r.unit + 's'}`;
         return `
-        <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #F3F4F6">
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #3A3A3C">
           <div style="width:10px;flex-shrink:0;align-self:stretch;border-radius:3px;background:${r.color}"></div>
           <div style="flex:1;min-width:0">
-            <div style="font-size:13px;color:#6B7280;margin-bottom:1px">${r.label}</div>
-            <div style="font-size:20px;font-weight:700;color:#111827;letter-spacing:-0.5px">${disp}</div>
+            <div style="font-size:13px;color:#8E8E93;margin-bottom:1px">${r.label}</div>
+            <div style="font-size:20px;font-weight:700;color:#FFFFFF;letter-spacing:-0.5px">${disp}</div>
           </div>
         </div>`;
       }).join('');
