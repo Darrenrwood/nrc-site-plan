@@ -1613,8 +1613,8 @@ function openMaterials() {
     icLarge > 0 && { color:'#16A34A', label:'New IC (600mm)',            value:`${icLarge}`, unit:'chamber' },
     icSmall > 0 && { color:'#16A34A', label:'New IC (300mm)',            value:`${icSmall}`, unit:'chamber' },
     pumps   > 0 && { color:'#C2410C', label:'Pumping station',           value:`${pumps}`,   unit:'unit' },
-    gravLen >= 0.05 && { color:'#92400E', label:'Foul gravity pipe',     value:fmtLen(gravLen), unit:null },
-    presLen >= 0.05 && { color:'#2563EB', label:'MDPE pressure pipe',    value:fmtLen(presLen), unit:null },
+    gravLen >= 0.05 && { color:'#92400E', label:'Foul pipe',     value:fmtLen(gravLen), unit:null },
+    presLen >= 0.05 && { color:'#2563EB', label:'MDPE pipe',    value:fmtLen(presLen), unit:null },
     cableLen>= 0.05 && { color:'#111827', label:'Armoured cable',        value:fmtLen(cableLen),unit:null },
   ].filter(Boolean);
 
