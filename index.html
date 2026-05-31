@@ -770,7 +770,7 @@ function applyIcSnaps(baseConns){
         const d=pxSegDist(icPx,aPx,bPx);
         if(d<minDist){minDist=d;splitIdx=i;}
       }
-      if(minDist>SNAP_PX)continue;
+      if(minDist>SNAP_PX && icOriginConn[ic.id]!==c.id)continue;
       // Record which pipe this IC is on and how far along it (0–1) so it can
       // follow the pipe when connected markers are moved or the STP is rotated.
       const _s=path[0],_e=path[path.length-1],_total=dist(_s,_e);
