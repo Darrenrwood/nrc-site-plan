@@ -665,12 +665,6 @@ function computeConns(markers){
       out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity'});
       prev=next;
     }
-    // Only connect chain tail to ST when there is no last IC to act as the intermediate point.
-    if(!ic&&st){
-      const [A,B]=stpFaces(st);
-      const stIn=dist(A,prev)<dist(B,prev)?A:B;
-      out.push({id:`eic-${prev.id}-st`,coords:[icEdgePt(prev,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
-    }
   }
   return out;
 }
@@ -1601,7 +1595,6 @@ function computeMaterials() {
       gravLen += bestD;
       prev = next;
     }
-    if (!ic && st) addG(prev, st);           // only when no last IC
   }
 
   // Pressure pipe: pump → discharge point or drainage field
