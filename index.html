@@ -641,10 +641,10 @@ function computeConns(markers){
     const eFace=icEdgePt(elec,kiosk);
     out.push({id:'kiosk-elec',coords:[kFace,eFace],color:'#111827',width:2.5,dashed:true,type:'cable'});
   }
-  // Existing ICs chained together, connecting lastIC → existIC1 → … → lastExistIC → ST.
-  // The direct ic→st connection is only used when there are NO existing ICs in the chain.
+  // Last IC → existing ST: always draw this when both are present.
+  // Existing ICs are upstream of the last IC and chain to it, not past it to the ST.
   const existIcs=markers.filter(m=>m.symbolId==='existing_inspection_chamber');
-  if(!existIcs.length&&ic&&st){
+  if(ic&&st){
     const [A,B]=stpFaces(st);
     const ic2={lat:ic.lat,lng:ic.lng};
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
@@ -652,8 +652,8 @@ function computeConns(markers){
   }
   if(existIcs.length){
     const remaining=[...existIcs];
-    let prev=ic; // start from last IC; null if not placed
-    if(!prev){prev=remaining.splice(0,1)[0];} // fallback: start chain from first existing IC
+    let prev=ic; // existing ICs chain toward the last IC
+    if(!prev){prev=remaining.splice(0,1)[0];} // no last IC: start chain from first existing IC
     while(remaining.length>0){
       let best=0,bestD=Infinity;
       for(let i=0;i<remaining.length;i++){
@@ -665,8 +665,8 @@ function computeConns(markers){
       out.push({id:`eic-${prev.id}-${next.id}`,coords:[e0,e1],color:'#92400E',width:3,type:'gravity'});
       prev=next;
     }
-    // Connect the tail of the chain to the existing ST (whether chain started from lastIC or existIC).
-    if(st){
+    // Only connect chain tail to ST when there is no last IC to act as the intermediate point.
+    if(!ic&&st){
       const [A,B]=stpFaces(st);
       const stIn=dist(A,prev)<dist(B,prev)?A:B;
       out.push({id:`eic-${prev.id}-st`,coords:[icEdgePt(prev,stIn),stIn],color:'#92400E',width:3,type:'gravity'});
@@ -1583,10 +1583,11 @@ function computeMaterials() {
   if (stp && pump) addG(stp, pump);          // STP outlet → pump (short gravity section)
   if (stp && !pump) addG(stp, disc || drain);// STP outlet → discharge point or drain field
 
-  // Existing IC chain (nearest-neighbour, same order as computeConns).
-  // Direct ic→st only used when no existing ICs form the chain.
+  // Last IC → existing ST: always count when both present.
+  addG(ic, st);
+  // Existing IC chain (nearest-neighbour). Existing ICs are upstream of last IC.
+  // Tail only connects to ST when there is no last IC to act as intermediate.
   const existIcs = placedMarkers.filter(m => m.symbolId === 'existing_inspection_chamber');
-  if (!existIcs.length) addG(ic, st);        // direct: last IC → existing septic tank
   if (existIcs.length) {
     const rem = [...existIcs];
     let prev = ic || rem.splice(0, 1)[0];
@@ -1600,7 +1601,7 @@ function computeMaterials() {
       gravLen += bestD;
       prev = next;
     }
-    if (st) addG(prev, st);                  // chain tail → existing septic tank
+    if (!ic && st) addG(prev, st);           // only when no last IC
   }
 
   // Pressure pipe: pump → discharge point or drainage field
