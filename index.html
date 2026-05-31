@@ -289,6 +289,18 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
   </div>
 </div>
 
+<!-- STP PE size picker shown on every placement -->
+<div class="modal" id="stp-pe-modal">
+  <div class="modal-sheet center">
+    <div class="modal-handle"></div>
+    <div class="modal-title">Select STP Size</div>
+    <div id="stp-pe-btns" style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin:16px 0"></div>
+    <div class="dim-btns">
+      <button class="dim-btn" onclick="cancelStpPe()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -401,6 +413,7 @@ let confirmingId = null;
 let connectionWaypoints = {};
 let bendViolations = {};
 let dimensionPending = null; // {lat,lng,symbol}
+let stpPlacePending = null;  // {lat,lng} — coords held while PE picker is open
 let markerCounter = 0;
 let promotedLastIcId = null;   // marker.id of new IC that acts as STP connection point
 let icSuggestionDismissed = false; // suppress re-prompt after user clicks No
@@ -974,9 +987,9 @@ map.on('click',e=>{
   const sym=SYM[selectedSymbolId];
   if(SINGLE_INSTANCE.has(sym.id)&&placedMarkers.some(m=>m.symbolId===sym.id))return;
 
-  if(sym.id==='sewage_treatment_plant'&&selectedPlantPE!==null){
-    const ps=PLANT_SIZES.find(p=>p.pe===selectedPlantPE);
-    if(ps){addMarker({lat,lng,symbolId:sym.id,customWidth:ps.length/1000,customDepth:ps.width/1000});return;}
+  if(sym.id==='sewage_treatment_plant'){
+    openStpPeModal(lat,lng);
+    return;
   }
   if(sym.dims?.userDefined){
     dimensionPending={lat,lng,symbol:sym};
@@ -1437,6 +1450,26 @@ function selectPE(pe){
   hideModal('ps-modal');
   autoSave();
 }
+
+function openStpPeModal(lat,lng){
+  stpPlacePending={lat,lng};
+  const btns=document.getElementById('stp-pe-btns');
+  btns.innerHTML=PLANT_SIZES.map(ps=>{
+    const active=ps.pe===selectedPlantPE;
+    return`<button class="dim-btn${active?' pri':''}" style="min-width:68px;font-size:15px;font-weight:700;padding:11px 0${active?';background:#16A34A':''}" onclick="confirmStpPe(${ps.pe})">${ps.pe} PE</button>`;
+  }).join('');
+  showModal('stp-pe-modal');
+}
+function confirmStpPe(pe){
+  if(!stpPlacePending)return;
+  const{lat,lng}=stpPlacePending;
+  stpPlacePending=null;
+  hideModal('stp-pe-modal');
+  selectPE(pe);
+  const ps=PLANT_SIZES.find(p=>p.pe===pe);
+  addMarker({lat,lng,symbolId:'sewage_treatment_plant',customWidth:ps.length/1000,customDepth:ps.width/1000});
+}
+function cancelStpPe(){stpPlacePending=null;hideModal('stp-pe-modal');}
 
 // ── Legend ────────────────────────────────────────────────────────────────────
 function renderLegend(){
