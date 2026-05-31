@@ -705,56 +705,72 @@ function catmullRom(pts, segs=20) {
 }
 
 // ── Connections ───────────────────────────────────────────────────────────────
-// Return the two short-side face centres of the STP icon in geographic coords.
-// Computed in screen-pixel space so the pipe terminates at the visible icon
-// edge regardless of zoom level. Icon is 46x30px, anchor [23,15].
+// Helpers: offset a lat/lng point by (dEastM, dNorthM) in metres.
+function _offsetLL(p,dEastM,dNorthM){
+  const cl=Math.cos(p.lat*Math.PI/180);
+  return{lat:p.lat+dNorthM/111319.9, lng:p.lng+dEastM/(111319.9*cl)};
+}
+// Geographic distance in metres between two lat/lng points.
+function _distM(a,b){
+  const cl=Math.cos((a.lat+b.lat)*Math.PI/360);
+  return Math.hypot((b.lat-a.lat)*111319.9,(b.lng-a.lng)*111319.9*cl);
+}
+
+// Return the two short-side face centres of the STP in real-world metres.
+// The STP long axis is along `rotation`; face is at ±halfLength from centre.
+// Screen rotation convention: rot=0 → east face, rot=90° → south face.
 function stpFaces(m){
   const rot=(m.rotation||0)*Math.PI/180;
-  const pc=map.latLngToContainerPoint([m.lat,m.lng]);
-  const hw=23; // half icon-width in px (short sides are the 30px tall sides)
-  const dx=hw*Math.cos(rot), dy=hw*Math.sin(rot);
-  return[
-    map.containerPointToLatLng([pc.x+dx,pc.y+dy]),
-    map.containerPointToLatLng([pc.x-dx,pc.y-dy])
-  ];
+  const d=effDims(m,SYM.sewage_treatment_plant);
+  const halfLen=d.width/2; // width field holds the long dimension (2.28 m for 5 PE)
+  const dE= halfLen*Math.cos(rot);  // east component
+  const dN=-halfLen*Math.sin(rot);  // north component (screen y is south, so negate)
+  return[_offsetLL(m,dE,dN),_offsetLL(m,-dE,-dN)];
 }
-// Return the nearest face-midpoint of the kiosk icon (42×32px) to `towardPt`.
-// Picks the closest of 4 axis-aligned face centres in pixel space.
+// Return the nearest face-midpoint of the kiosk to `towardPt` (axis-aligned, no rotation).
 function kioskFace(kiosk,towardPt){
-  const pc=map.latLngToContainerPoint([kiosk.lat,kiosk.lng]);
-  const tp=map.latLngToContainerPoint([towardPt.lat,towardPt.lng]);
-  const faces=[[pc.x,pc.y-16],[pc.x,pc.y+16],[pc.x-21,pc.y],[pc.x+21,pc.y]];
-  let best=faces[0],bestD=Infinity;
-  for(const f of faces){const d=Math.hypot(f[0]-tp.x,f[1]-tp.y);if(d<bestD){bestD=d;best=f;}}
-  return map.containerPointToLatLng(best);
-}
-// Return the nearest icon face-midpoint of the drainage field to `target`.
-// Icon is 28x55px, anchor [14,27]. Four face-midpoints computed in screen-pixel
-// space (with rotation) then converted back to lat/lng.
-function drainFace(m, target){
-  const rot=(m.rotation||0)*Math.PI/180;
-  const c=Math.cos(rot), s=Math.sin(rot);
-  const pc=map.latLngToContainerPoint([m.lat,m.lng]);
-  const tc=map.latLngToContainerPoint([target.lat,target.lng]);
-  const hw=14, hh=27; // half icon dimensions in px
+  const d=effDims(kiosk,SYM.kiosk);
+  const hw=d.width/2,hd=d.depth/2;
   const faces=[
-    [pc.x+hw*c,  pc.y+hw*s],   // right
-    [pc.x-hw*c,  pc.y-hw*s],   // left
-    [pc.x-hh*s,  pc.y+hh*c],   // bottom
-    [pc.x+hh*s,  pc.y-hh*c],   // top
+    _offsetLL(kiosk,0, hd),  // north
+    _offsetLL(kiosk,0,-hd),  // south
+    _offsetLL(kiosk,-hw,0),  // west
+    _offsetLL(kiosk, hw,0),  // east
   ];
-  const best=faces.reduce((b,f)=>(f[0]-tc.x)**2+(f[1]-tc.y)**2<(b[0]-tc.x)**2+(b[1]-tc.y)**2?f:b);
-  return map.containerPointToLatLng(best);
+  return faces.reduce((b,f)=>_distM(f,towardPt)<_distM(b,towardPt)?f:b);
+}
+// Return the nearest face-midpoint of the drainage field to `target`.
+// Icon has a natural height > width; rotation is applied in screen-space
+// (rot=0 → long axis vertical → north/south faces at ±halfDepth).
+function drainFace(m,target){
+  const rot=(m.rotation||0)*Math.PI/180;
+  const d=effDims(m,SYM.drainage_field);
+  const hw=d.width/2,hd=d.depth/2;
+  // In screen space rot=0 → long axis vertical (height=depth), so:
+  //   right face: (+hw*cos, +hw*sin) east/north
+  //   left face:  (-hw*cos, -hw*sin)
+  //   bottom face:(-hd*sin, +hd*cos) → in geo: east=-hd*sin, north=+hd*cos (but screen y flipped)
+  // More carefully: same convention as stpFaces — east=...*cos(rot), north=-...*sin(rot)
+  const cosR=Math.cos(rot),sinR=Math.sin(rot);
+  const faces=[
+    _offsetLL(m, hw*cosR,-hw*sinR),  // right end
+    _offsetLL(m,-hw*cosR, hw*sinR),  // left end
+    _offsetLL(m,-hd*sinR,-hd*cosR),  // actually: bottom in screen = south
+    _offsetLL(m, hd*sinR, hd*cosR),  // top in screen = north
+  ];
+  return faces.reduce((b,f)=>_distM(f,target)<_distM(b,target)?f:b);
 }
 const SNAP_PX=20;
 
 function icEdgePt(ic,towardPt){
-  const ip=map.latLngToContainerPoint([ic.lat,ic.lng]);
-  const tp=map.latLngToContainerPoint([towardPt.lat,towardPt.lng]);
-  const dx=tp.x-ip.x,dy=tp.y-ip.y,len=Math.hypot(dx,dy);
-  if(len<1)return{lat:ic.lat,lng:ic.lng};
-  const r=ic.symbolId==='pipe_junction'?8:SYM[ic.symbolId]?.small?13:17;
-  return map.containerPointToLatLng([ip.x+(dx/len)*r,ip.y+(dy/len)*r]);
+  const cl=Math.cos(ic.lat*Math.PI/180);
+  const dEast=(towardPt.lng-ic.lng)*111319.9*cl;
+  const dNorth=(towardPt.lat-ic.lat)*111319.9;
+  const d=Math.hypot(dEast,dNorth);
+  if(d<0.01)return{lat:ic.lat,lng:ic.lng};
+  // Real-world edge radius: 150mm large IC, 75mm small IC, ~40mm pipe junction
+  const r=ic.symbolId==='pipe_junction'?0.04:ic.symbolId==='new_inspection_chamber_small'?0.075:0.15;
+  return _offsetLL(ic,(dEast/d)*r,(dNorth/d)*r);
 }
 
 function pxSegDist(p,a,b){
@@ -1710,25 +1726,18 @@ function renderConnections(zoomOnly=false){
       // User-dragged waypoints — preserve them as-is
       nw[c.id]=[s,...middle,e];
     } else if(c.type==='gravity' && c.coords.length>2){
-      // Dijkstra routing succeeded — always use the fresh result, even on zoom.
-      // This lets a previously-failing route (straight line) get corrected as soon
-      // as the face positions shift into a routable configuration on zoom.
+      // Auto-routed gravity pipe — use the freshly computed path.
+      // Face positions are now zoom-independent (real-world metres) so
+      // this result is stable across zoom levels.
       nw[c.id]=[...c.coords];
     } else {
-      // Routing returned a straight-line fallback. On zoom-only renders, preserve
-      // whatever path we had before so a previously successful route isn't replaced
-      // by a straight line through a building due to a transient face-position failure.
-      if(zoomOnly && ex && ex.length>2 && c.type==='gravity'){
-        nw[c.id]=ex;
-      } else {
-        const pts=interpPts(s,e,sp);
-        // Pressure/cable pipes always get at least one draggable midpoint node
-        // so the user can arc the pipe even when markers are close together
-        if(pts.length===0&&(c.type==='pressure'||c.type==='cable')){
-          pts.push({lat:(s.lat+e.lat)/2,lng:(s.lng+e.lng)/2});
-        }
-        nw[c.id]=[s,...pts,e];
+      const pts=interpPts(s,e,sp);
+      // Pressure/cable pipes always get at least one draggable midpoint node
+      // so the user can arc the pipe even when markers are close together
+      if(pts.length===0&&(c.type==='pressure'||c.type==='cable')){
+        pts.push({lat:(s.lat+e.lat)/2,lng:(s.lng+e.lng)/2});
       }
+      nw[c.id]=[s,...pts,e];
     }
   }
   connectionWaypoints=nw;
@@ -1799,8 +1808,7 @@ function renderConnections(zoomOnly=false){
     connDots[c.id]=dots;
 
     // 45m check — place "?" IC suggestion markers every 22m (proposed pipes only).
-    // Skip on zoom-only renders: path length fluctuates with pixel-based endpoints
-    // and would reset gravSuggestShown, causing the modal to refire after dismiss.
+    // Skip on zoom-only renders so gravSuggestShown isn't reset just by zooming.
     if(c.type==='gravity' && !c.existing && !zoomOnly){
       let total=0;
       for(let i=0;i<path.length-1;i++)total+=dist(path[i],path[i+1]);
