@@ -1762,6 +1762,38 @@ function recheckViolations(){
   updateVioBanner();
 }
 
+// Return the icon-edge lat/lng for a pipe endpoint so the rendered line visually
+// terminates at the marker icon boundary at any zoom level.
+// `endPt`  — the routing endpoint (real-world metres from marker centre)
+// `fromPt` — the next waypoint along the pipe (used to compute direction)
+// Only adjusts if a placed marker is within 20m of endPt.
+function _visualEdgePt(endPt,fromPt){
+  let nearest=null,minD=20;
+  for(const m of placedMarkers){
+    const d=dist(endPt,{lat:m.lat,lng:m.lng});
+    if(d<minD){minD=d;nearest=m;}
+  }
+  if(!nearest)return endPt;
+  const sym=SYM[nearest.symbolId];
+  // Icon half-sizes in pixels (iconSize[0]/2 for width, [1]/2 for height; use the
+  // shorter axis so the line just clears the icon face rather than corner)
+  let halfPx=17; // default 34×34
+  if(sym){
+    if(sym.id==='sewage_treatment_plant'||sym.id==='existing_septic_tank') halfPx=15; // 46×30 → short side=15
+    else if(sym.id==='kiosk') halfPx=16;         // 42×32 → short side=16
+    else if(sym.id==='drainage_field') halfPx=14; // 28×55 → short side=14
+    else if(sym.small||sym.id==='new_inspection_chamber_small') halfPx=13; // 26×26
+    else if(sym.id==='pipe_junction') halfPx=8;   // 16×16
+  }
+  const mPx=map.latLngToContainerPoint([nearest.lat,nearest.lng]);
+  const fPx=map.latLngToContainerPoint([fromPt.lat,fromPt.lng]);
+  const dx=fPx.x-mPx.x,dy=fPx.y-mPx.y,len=Math.hypot(dx,dy);
+  if(len<1)return endPt;
+  const edgePx={x:mPx.x+(dx/len)*halfPx,y:mPx.y+(dy/len)*halfPx};
+  return map.containerPointToLatLng(edgePx);
+}
+}
+
 // ── Connections ───────────────────────────────────────────────────────────────
 function renderConnections(zoomOnly=false){
   Object.values(connLines).forEach(l=>map.removeLayer(l));
@@ -1840,7 +1872,15 @@ function renderConnections(zoomOnly=false){
     const renderPts=(c.type==='pressure'||c.type==='cable')&&path.length>=2
       ?catmullRom(path):path;
     if(c.routingFailed)continue; // no line drawn — banner already tells the user
-    const lls=renderPts.map(p=>[p.lat,p.lng]);
+    // Snap rendered endpoints to icon edge in pixel space so the pipe visually
+    // terminates at the marker boundary at any zoom level.  Routing data in
+    // connectionWaypoints is unchanged — this is display-only.
+    const visPts=renderPts.length>=2?[
+      _visualEdgePt(renderPts[0],renderPts[1]),
+      ...renderPts.slice(1,-1),
+      _visualEdgePt(renderPts[renderPts.length-1],renderPts[renderPts.length-2]),
+    ]:renderPts;
+    const lls=visPts.map(p=>[p.lat,p.lng]);
     const line=L.polyline(lls,{color:c.color,weight:c.width,dashArray:c.dashed?'8 6':null,pane:'connPane'}).addTo(map);
     connLines[c.id]=line;
 
