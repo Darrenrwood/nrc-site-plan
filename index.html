@@ -137,9 +137,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
   </div>
 
   <div id="hint-bar">
-    <span style="font-size:13px">👆</span>
-    <span id="hint-text">Tap map to place</span>
-    <button id="gps-btn" onclick="placeAtGps()">📍 Place here</button>
+    <span id="hint-text">Tap map to place · or stand on the spot and tap</span>
+    <button id="gps-btn" onclick="placeAtGps()">📍 My location</button>
     <button id="hint-cancel" onclick="clearSelected()">✕</button>
   </div>
 
@@ -2188,7 +2187,7 @@ function renderPalette(){
       item.onclick=()=>{
         selectedSymbolId=selectedSymbolId===s.id?null:s.id;
         const hb=document.getElementById('hint-bar');
-        if(selectedSymbolId){hb.classList.add('vis');document.getElementById('hint-text').textContent=`Tap map to place: ${SYM[selectedSymbolId].label}`;hb.style.background=SYM[selectedSymbolId].color;}
+        if(selectedSymbolId){hb.classList.add('vis');document.getElementById('hint-text').textContent=`Tap map to place ${SYM[selectedSymbolId].label} · or stand on the spot and tap`;hb.style.background=SYM[selectedSymbolId].color;}
         else hb.classList.remove('vis');
         renderPalette();
       };
