@@ -11,10 +11,10 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#111;color:#fff;overflow:hidden}
-#app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1c1c1e;color:#fff;overflow:hidden}
+#app{display:flex;flex-direction:column;height:100vh;height:100dvh;padding-top:env(safe-area-inset-top,0px)}
 
-#top-bar{display:flex;align-items:center;gap:8px;padding:10px 14px;padding-top:calc(env(safe-area-inset-top) + 10px);background:#1c1c1e;border-bottom:1px solid #333;flex-shrink:0}
+#top-bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#1c1c1e;border-bottom:1px solid #333;flex-shrink:0}
 #top-bar input{flex:1;background:transparent;border:none;outline:none;color:#fff;font-size:15px;padding:4px 0;letter-spacing:.05em}
 #top-bar input::placeholder{color:#666;letter-spacing:0}
 #search-btn{background:none;border:none;color:#0a84ff;font-size:22px;cursor:pointer;padding:2px 4px;line-height:1}
@@ -57,7 +57,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 .loc-dot-inner{position:absolute;inset:0;background:#2563eb;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,.4)}
 .loc-dot-pulse{position:absolute;inset:0;background:rgba(37,99,235,.45);border-radius:50%;animation:loc-pulse 2s ease-out infinite}
 
-#plan-modal{position:fixed;inset:0;z-index:6000;background:#1a1a1a;display:none;flex-direction:column}
+#plan-modal{position:fixed;inset:0;z-index:6000;background:#1a1a1a;display:none;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}
 #plan-modal.vis{display:flex}
 #plan-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#111;border-bottom:1px solid #333;flex-shrink:0;position:relative;z-index:1}
 #plan-close-btn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff;font-size:13px;font-weight:600;border-radius:16px;padding:5px 12px;cursor:pointer;-webkit-tap-highlight-color:transparent}
@@ -1109,7 +1109,8 @@ function computeConns(markers){
     const pc={lat:pump.lat,lng:pump.lng};
     const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,pc);
     const destEnd=disc?icEdgePt(disc,pc):destCenter;
-    out.push({id:'pump-dest',coords:[icEdgePt(pump,destCenter),destEnd],color:'#2563EB',width:3,type:'pressure'});
+    const r=_routeTagged(icEdgePt(pump,destCenter),destEnd);
+    out.push({id:'pump-dest',coords:r.coords,color:'#2563EB',width:3,type:'pressure',routingFailed:r.routingFailed});
   }
   if(stp&&!pump&&stpOut&&(drain||disc)){
     const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,stpOut);
@@ -2815,7 +2816,9 @@ function clearAll(){
   placedMarkers=[];violatingIds=new Set();confirmingId=null;
   connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};stpTargetIcId=null;manualWaypointConns.clear();_cachedConns=null;
   promotedLastIcId=null;icSuggestionDismissed=false;
-  suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;
+  suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;gravBannerDismissed=false;
+  clearTimeout(gravIcBannerTimer);gravIcBannerTimer=null;
+  document.getElementById('grav-ic-banner').classList.remove('vis');
   _clearNearbyLayers();
   clearSelected();
   renderConnections();
