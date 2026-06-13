@@ -34,6 +34,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 .mctrl.red{color:#ff453a}
 
 #title-badge,#plant-badge{position:absolute;z-index:1000;display:none;align-items:center;gap:5px;padding:5px 10px;border-radius:10px;color:#fff;font-size:12px;font-weight:600}
+.nearby-title-lbl{background:#1d4ed8!important;color:#fff!important;border:none!important;font-size:10px!important;font-weight:700!important;padding:2px 6px!important;border-radius:6px!important;box-shadow:0 1px 4px rgba(0,0,0,.5)!important;white-space:nowrap}
 #title-badge{top:12px;left:12px;background:rgba(0,0,0,.65)}
 #plant-badge{top:46px;left:12px;background:rgba(22,163,74,.9)}
 #title-badge.vis,#plant-badge.vis{display:flex}
@@ -1572,6 +1573,7 @@ async function doLoad(){
     return;
   }
   setLoading(true,'Looking up boundary…');
+  _clearNearbyLayers();
   if(boundaryLayer){map.removeLayer(boundaryLayer);boundaryLayer=null;}
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
@@ -2702,6 +2704,7 @@ function clearAll(){
   connectionWaypoints={};bendViolations={};icAttachments={};icOriginConn={};stpTargetIcId=null;manualWaypointConns.clear();_cachedConns=null;
   promotedLastIcId=null;icSuggestionDismissed=false;
   suggestPositions=[];gravSuggestShown=false;gravSuggestDeclined=false;
+  _clearNearbyLayers();
   clearSelected();
   renderConnections();
   updateVioBanner();updateClearBtn();
@@ -2908,6 +2911,8 @@ function openMaterials() {
 
 // ── Live location ─────────────────────────────────────────────────────────────
 let _locMarker=null, _locAccCircle=null, _locInitDone=false, _lastGpsPos=null;
+let _nearbyLayers=[];
+function _clearNearbyLayers(){_nearbyLayers.forEach(l=>{try{map.removeLayer(l);}catch(_){}});_nearbyLayers=[];}
 
 function _updateLocDot(lat,lng,accuracy){
   if(!_locMarker){
@@ -2955,15 +2960,14 @@ function _wgs84ToBng(lat,lng){
 }
 
 async function _tryFetchPropertyAtPoint(lat,lng){
-  _showLocToast('🔍 Looking up property…','#1d4ed8',20000);
+  _showLocToast('🔍 Looking up nearby boundaries…','#1d4ed8',30000);
   try{
     // ── Fast path: previously remembered title near this GPS position ──────────
     try{
       const saved=JSON.parse(localStorage.getItem('nrc_last_title_pos')||'null');
       if(saved?.title&&saved?.lat!=null&&saved?.lng!=null){
         const dlat=lat-saved.lat,dlng=(lng-saved.lng)*Math.cos(lat*Math.PI/180);
-        const dist=Math.sqrt(dlat*dlat+dlng*dlng)*111320; // metres
-        if(dist<500){
+        if(Math.sqrt(dlat*dlat+dlng*dlng)*111320<500){
           _showLocToast(`🏠 ${saved.title} (last used) — loading boundary…`,'#15803d',5000);
           document.getElementById('title-input').value=saved.title;
           doLoad();
@@ -2972,84 +2976,101 @@ async function _tryFetchPropertyAtPoint(lat,lng){
       }
     }catch(_){}
 
-    // ── Try 1: HMLR WMS GetFeatureInfo ────────────────────────────────────────
-    // WFS is disabled but WMS is a different GeoServer service — GetFeatureInfo
-    // returns the title_no attribute for the polygon at the clicked point.
-    const d=0.0003;
-    const bbox=`${lng-d},${lat-d},${lng+d},${lat+d}`;
-    // CRS:84 uses lng,lat bbox order (unlike EPSG:4326 which flips axes in WMS 1.3.0)
-    const wmsBase=`https://inspire.landregistry.gov.uk/inspire/ows?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=CRS:84&BBOX=${bbox}&WIDTH=5&HEIGHT=5&I=2&J=2`;
-    let titleNo=null;
+    // ── Collect title numbers within ~100m ────────────────────────────────────
+    const dlat=0.0009,dlng=0.0015; // ~100m bbox
+    const bbox=`${lng-dlng},${lat-dlat},${lng+dlng},${lat+dlat}`;
+    const titles=new Set();
+    const entityMap={}; // title → entity (with geometry if we already have it)
     const diag=[];
-    async function _wms(fmt){
-      if(titleNo)return;
+
+    // Try HMLR WMS GetFeatureInfo — FEATURE_COUNT=50 returns up to 50 polygons
+    for(const fmt of['application/json','text/plain']){
+      if(titles.size)break;
       try{
-        const rw=await fetch(`${wmsBase}&INFO_FORMAT=${encodeURIComponent(fmt)}`);
+        const wmsUrl=`https://inspire.landregistry.gov.uk/inspire/ows?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=CRS:84&BBOX=${bbox}&WIDTH=100&HEIGHT=100&I=50&J=50&FEATURE_COUNT=50&INFO_FORMAT=${encodeURIComponent(fmt)}`;
+        const rw=await fetch(wmsUrl);
         const txt=await rw.text();
-        if(!rw.ok){diag.push(`WMS:${rw.status}`);return;}
-        // JSON format
+        if(!rw.ok){diag.push(`WMS:${rw.status}`);continue;}
         if(fmt.includes('json')){
           try{
-            const j=JSON.parse(txt);
-            const feat=(j.features||j.featureCollection?.features||[])[0];
-            const p=feat?.properties||feat?.attributes||{};
-            titleNo=p.title_no||p.TITLE_NO||p.Title_No||null;
-            diag.push(titleNo?`WMS-j:ok`:`WMS-j:0`);
+            const feats=(JSON.parse(txt).features||[]);
+            feats.forEach(f=>{const t=f.properties?.title_no||f.properties?.TITLE_NO;if(t)titles.add(t);});
+            diag.push(`WMS-j:${titles.size}`);
           }catch(_){diag.push('WMS-j:parse');}
-        } else {
-          // text/plain or GML fallback
-          const m=txt.match(/title_no\s*[=:>]\s*([A-Z]{1,3}\d+)/i)
-            ||txt.match(/<[^>]*title_no[^>]*>([A-Z]{1,3}\d+)</i);
-          if(m){titleNo=m[1];diag.push('WMS-t:ok');}
-          else diag.push('WMS-t:0');
+        }else{
+          [...txt.matchAll(/title_no\s*[=:>]\s*([A-Z]{1,3}\d+)/gi)].forEach(m=>titles.add(m[1]));
+          diag.push(`WMS-t:${titles.size}`);
         }
-      }catch(e){
-        const isCors=e.message?.toLowerCase().includes('cors')||e.message?.toLowerCase().includes('blocked');
-        diag.push(isCors?'WMS:CORS':'WMS:ERR');
-      }
+      }catch(e){diag.push(e.message?.toLowerCase().includes('cors')?'WMS:CORS':'WMS:ERR');}
     }
-    await _wms('application/json');
-    await _wms('text/plain');
 
-    if(titleNo){
-      _showLocToast(`🏠 Found ${titleNo} — loading boundary…`,'#15803d',5000);
-      document.getElementById('title-input').value=titleNo;
-      doLoad();
+    // Try planning.data.gov.uk bbox — may return entities with geometry already attached
+    try{
+      const box=`POLYGON((${lng-dlng} ${lat-dlat},${lng+dlng} ${lat-dlat},${lng+dlng} ${lat+dlat},${lng-dlng} ${lat+dlat},${lng-dlng} ${lat-dlat}))`;
+      const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=50`);
+      const j=await r.json();
+      const ents=j.entities||[];
+      diag.push(`pdo:${r.status}/${ents.length}`);
+      ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
+    }catch(_){diag.push('pdo:ERR');}
+
+    if(!titles.size){
+      _showLocToast(`❌ No boundaries found [${diag.join(' ')}] — type your title number and tap →`,'#7f1d1d',12000);
       return;
     }
 
-    // ── Try 2: planning.data.gov.uk spatial queries ────────────────────────────
+    // ── Fetch geometry for titles we have a reference but no geometry for ────
+    _showLocToast(`📐 Found ${titles.size} title${titles.size>1?'s':''} nearby — fetching geometry…`,'#1d4ed8',30000);
     const base='https://www.planning.data.gov.uk/entity.json?dataset=title-boundary';
-    let entity=null;
-
-    async function _q(label,url){
-      if(entity)return;
+    for(const title of titles){
+      if(entityMap[title]?.geometry)continue;
       try{
-        const r=await fetch(url);
+        const r=await fetch(`${base}&reference=${encodeURIComponent(title)}&limit=1`);
         const j=await r.json();
-        const n=j.entities?.length??0;
-        diag.push(`${label}:${r.status}/${n}`);
-        if(r.ok&&n)entity=j.entities[0];
-      }catch(e){diag.push(`${label}:ERR`);}
+        const e=j.entities?.[0];
+        if(e)entityMap[title]=e;
+      }catch(_){}
     }
 
-    await _q('ll',`${base}&longitude=${lng.toFixed(6)}&latitude=${lat.toFixed(6)}&limit=1`);
-    const geom=`POINT(${lng.toFixed(6)} ${lat.toFixed(6)})`;
-    await _q('pt',`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=intersects&limit=1`);
-    const d2=0.005;
-    const box=`POLYGON((${lng-d2} ${lat-d2},${lng+d2} ${lat-d2},${lng+d2} ${lat+d2},${lng-d2} ${lat+d2},${lng-d2} ${lat-d2}))`;
-    await _q('box',`${base}&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=10`);
-
-    if(entity){
-      const ref=entity.reference;
-      if(!ref){_showLocToast('❌ Boundary found but no title reference','#7f1d1d',6000);return;}
-      _showLocToast(`🏠 Found ${ref} — loading boundary…`,'#15803d',5000);
-      document.getElementById('title-input').value=ref;
-      doLoad();
-      return;
+    // ── Draw all found polygons in blue; tap to select ────────────────────────
+    _clearNearbyLayers();
+    let drawn=0;
+    for(const title of titles){
+      const e=entityMap[title];
+      if(!e?.geometry)continue;
+      try{
+        const rings=parseWKT(e.geometry);
+        if(!rings.length)continue;
+        const poly=L.polygon(rings.map(r=>r.map(c=>[c.lat,c.lng])),
+          {color:'#1d4ed8',weight:2.5,fillColor:'#3b82f6',fillOpacity:0.18,interactive:true}).addTo(map);
+        poly.bindTooltip(title,{permanent:true,direction:'center',className:'nearby-title-lbl'});
+        poly.on('click',()=>{
+          _clearNearbyLayers();
+          _showLocToast(`🏠 ${title} selected — loading boundary…`,'#15803d',5000);
+          document.getElementById('title-input').value=title;
+          doLoad();
+        });
+        _nearbyLayers.push(poly);
+        drawn++;
+      }catch(_){}
     }
 
-    _showLocToast(`❌ Not found [${diag.join(' ')}] — type your title number and tap →`,'#7f1d1d',12000);
+    if(drawn){
+      if(drawn===1){
+        // Only one polygon — auto-select it instead of making the user tap
+        const onlyTitle=[...titles].find(t=>entityMap[t]?.geometry);
+        if(onlyTitle){
+          _clearNearbyLayers();
+          _showLocToast(`🏠 ${onlyTitle} — loading boundary…`,'#15803d',5000);
+          document.getElementById('title-input').value=onlyTitle;
+          doLoad();
+          return;
+        }
+      }
+      _showLocToast(`🏠 ${drawn} properties nearby — tap yours to load it`,'#15803d',20000);
+    }else{
+      _showLocToast(`❌ Titles found [${[...titles].join(', ')}] but no geometry available — type your title number and tap →`,'#7f1d1d',10000);
+    }
   }catch(e){
     const isNet=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
     _showLocToast(isNet?'❌ Network error — check connection':'❌ '+e.message.slice(0,60),'#7f1d1d',6000);
