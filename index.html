@@ -2957,35 +2957,32 @@ async function _tryFetchPropertyAtPoint(lat,lng){
   try{
     const base='https://www.planning.data.gov.uk/entity.json?dataset=title-boundary';
     let entity=null;
+    const diag=[];
 
-    // Try 1: longitude/latitude params — the API's native point-in-polygon query
-    const r1=await fetch(`${base}&longitude=${lng.toFixed(6)}&latitude=${lat.toFixed(6)}&limit=1`);
-    if(r1.ok){const j=await r1.json();if(j.entities?.length)entity=j.entities[0];}
-
-    // Try 2: WKT POINT with intersects — finds polygons that contain this point
-    if(!entity){
-      const geom=`POINT(${lng.toFixed(6)} ${lat.toFixed(6)})`;
-      const r2=await fetch(`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=intersects&limit=1`);
-      if(r2.ok){const j=await r2.json();if(j.entities?.length)entity=j.entities[0];}
+    async function _q(label,url){
+      if(entity)return;
+      try{
+        const r=await fetch(url);
+        const j=await r.json();
+        const n=j.entities?.length??0;
+        diag.push(`${label}:${r.status}/${n}`);
+        if(r.ok&&n)entity=j.entities[0];
+      }catch(e){diag.push(`${label}:ERR`);}
     }
 
-    // Try 3: WKT POINT with contains — entity polygon contains this point
-    if(!entity){
-      const geom=`POINT(${lng.toFixed(6)} ${lat.toFixed(6)})`;
-      const r3=await fetch(`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=contains&limit=1`);
-      if(r3.ok){const j=await r3.json();if(j.entities?.length)entity=j.entities[0];}
-    }
-
-    // Try 4: 500m bounding box — wide net for GPS drift or boundary gaps
-    if(!entity){
-      const d=0.005;
-      const box=`POLYGON((${lng-d} ${lat-d},${lng+d} ${lat-d},${lng+d} ${lat+d},${lng-d} ${lat+d},${lng-d} ${lat-d}))`;
-      const r4=await fetch(`${base}&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=10`);
-      if(r4.ok){const j=await r4.json();if(j.entities?.length)entity=j.entities[0];}
-    }
+    await _q('ll',`${base}&longitude=${lng.toFixed(6)}&latitude=${lat.toFixed(6)}&limit=1`);
+    const geom=`POINT(${lng.toFixed(6)} ${lat.toFixed(6)})`;
+    await _q('int',`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=intersects&limit=1`);
+    await _q('con',`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=contains&limit=1`);
+    const d=0.005;
+    const box=`POLYGON((${lng-d} ${lat-d},${lng+d} ${lat-d},${lng+d} ${lat+d},${lng-d} ${lat+d},${lng-d} ${lat-d}))`;
+    await _q('box500',`${base}&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=10`);
+    const d2=0.02;
+    const box2=`POLYGON((${lng-d2} ${lat-d2},${lng+d2} ${lat-d2},${lng+d2} ${lat+d2},${lng-d2} ${lat+d2},${lng-d2} ${lat-d2}))`;
+    await _q('box2km',`${base}&geometry=${encodeURIComponent(box2)}&geometry_relation=intersects&limit=20`);
 
     if(!entity){
-      _showLocToast('❌ Boundary not found — clear input and tap → to retry, or type your title number','#7f1d1d',10000);
+      _showLocToast(`❌ Not found [${diag.join(' ')}] — enter title number manually`,'#7f1d1d',15000);
       return;
     }
     const ref=entity.reference;
