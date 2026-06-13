@@ -880,9 +880,7 @@ function hasVio(m){
     return`Within ${r.boundary}m of the site boundary (${r.boundary}m clearance required)`;
   // A marker whose centre is inside a building is always a violation regardless of
   // the numeric clearance threshold (distToBuildings from inside can exceed the threshold).
-  if(buildingPolygons.length&&_inAnyBuilding(m.lat,m.lng))
-    return'Placed inside a building';
-  if(r.building>0&&buildingPolygons.length&&distToBuildings(p)<r.building)
+  if(r.building>0&&buildingPolygons.length&&(distToBuildings(p)<r.building||_inAnyBuilding(m.lat,m.lng)))
     return`Within ${r.building}m of a building (${r.building}m clearance required)`;
   return null;
 }
@@ -1815,6 +1813,8 @@ function parseWKT(wkt){
 
 // ── Markers ───────────────────────────────────────────────────────────────────
 function addMarker(m){
+  // Hard block — no code path may place a marker inside a building.
+  if(buildingPolygons.length&&_markerOverlapsBuilding(m)){_showBuildingToast(-1);return;}
   m.id=String(++markerCounter);
   // Auto-orient on placement so the correct face points toward its reference marker.
   // Rotation is in CSS degrees (CW from up = north).
