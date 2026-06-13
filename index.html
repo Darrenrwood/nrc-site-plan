@@ -1569,11 +1569,12 @@ async function doLoad(){
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
   try{
-    // CQL_FILTER with explicit ' encoding: encodeURIComponent intentionally leaves ' unencoded
-    // (it's in the "unreserved" set), so we manually replace ' with %27 after encoding.
-    // corsproxy.io decodes the url= param and forwards the CQL filter with ' to HMLR.
+    // URLSearchParams.set() encodes ' as %27 by design (unlike encodeURIComponent which
+    // leaves ' unencoded), producing a fetch URL Safari accepts.
     const cqlUrl=`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=1&CQL_FILTER=TITLE_NO='${tn}'`;
-    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(cqlUrl).replace(/'/g,'%27')}`);
+    const proxyUrl=new URL('https://corsproxy.io/');
+    proxyUrl.searchParams.set('url',cqlUrl);
+    const r=await fetch(proxyUrl.toString());
     if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
     const txt=await r.text();
     if(txt.trim().startsWith('<')){
