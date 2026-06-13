@@ -3015,24 +3015,95 @@ async function _tryFetchPropertyAtPoint(lat,lng){
       ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
     }catch(_){diag.push('pdo-geo:ERR');}
 
-    // Try Nominatim reverse geocode → postcode → planning.data.gov.uk text search
-    // Spatial indexing in planning.data.gov.uk is incomplete; text search may work where spatial doesn't
+    // ── Try C: planning.data.gov.uk with entries=all (includes non-current) ─────
     if(!titles.size){
       try{
-        const nomR=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,{headers:{'Accept-Language':'en-GB'}});
-        const nom=await nomR.json();
-        const postcode=(nom.address?.postcode||'').replace(/\s+/g,'');
-        const road=nom.address?.road||nom.address?.street||'';
-        diag.push(`nom:${postcode||'no-pc'}`);
-        if(postcode){
-          // Search by postcode
-          const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&q=${encodeURIComponent(postcode)}&limit=20`);
+        const box2=`POLYGON((${lng-dlng} ${lat-dlat},${lng+dlng} ${lat-dlat},${lng+dlng} ${lat+dlat},${lng-dlng} ${lat+dlat},${lng-dlng} ${lat-dlat}))`;
+        const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&entries=all&geometry=${encodeURIComponent(box2)}&geometry_relation=intersects&limit=50`);
+        const j=await r.json();
+        const ents=j.entities||[];
+        diag.push(`pdo-all:${r.status}/${ents.length}`);
+        ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
+      }catch(_){diag.push('pdo-all:ERR');}
+    }
+
+    // ── Try D: planning.data.gov.uk with larger 500m bbox ────────────────────
+    if(!titles.size){
+      try{
+        const bigD=0.005;
+        const bigBox=`POLYGON((${lng-bigD} ${lat-bigD},${lng+bigD} ${lat-bigD},${lng+bigD} ${lat+bigD},${lng-bigD} ${lat+bigD},${lng-bigD} ${lat-bigD}))`;
+        const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&geometry=${encodeURIComponent(bigBox)}&geometry_relation=intersects&limit=50`);
+        const j=await r.json();
+        const ents=j.entities||[];
+        diag.push(`pdo-big:${r.status}/${ents.length}`);
+        ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
+      }catch(_){diag.push('pdo-big:ERR');}
+    }
+
+    // ── Try E: Nominatim reverse geocode → postcode ───────────────────────────
+    let postcode='';
+    let houseNum='';
+    try{
+      const nomR=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,{headers:{'Accept-Language':'en-GB'}});
+      const nom=await nomR.json();
+      postcode=(nom.address?.postcode||'').replace(/\s+/g,'');
+      houseNum=nom.address?.house_number||nom.address?.house_name||'';
+      diag.push(`nom:${postcode||'no-pc'}`);
+    }catch(_){diag.push('nom:ERR');}
+
+    // ── Try F: planning.data.gov.uk text search by postcode ──────────────────
+    if(!titles.size&&postcode){
+      try{
+        const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&q=${encodeURIComponent(postcode)}&limit=20`);
+        const j=await r.json();
+        const ents=j.entities||[];
+        diag.push(`pdo-pc:${r.status}/${ents.length}`);
+        ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
+      }catch(_){diag.push('pdo-pc:ERR');}
+    }
+
+    // ── Try G: HMLR Price Paid Linked Data by postcode ────────────────────────
+    // Returns recent property transactions; may include title numbers
+    if(!titles.size&&postcode){
+      try{
+        const pc=postcode.replace(/([A-Z0-9]+)([0-9][A-Z]{2})$/,'$1 $2'); // re-insert space
+        const r=await fetch(`https://landregistry.data.gov.uk/data/ppi/transaction-record.json?propertyAddress.postcode=${encodeURIComponent(pc)}&_limit=10&_view=basic`,{headers:{'Accept':'application/json'}});
+        if(r.ok){
           const j=await r.json();
-          const ents=j.entities||[];
-          diag.push(`pdo-pc:${r.status}/${ents.length}`);
-          ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
-        }
-      }catch(_){diag.push('nom:ERR');}
+          const items=j.result?.items||j.items||[];
+          diag.push(`ppd:${items.length}`);
+          items.forEach(item=>{
+            // Price paid records may have a title field or we can extract from URI
+            const t=item.title?.value||item['title-number']?.value||'';
+            const m=t.match(/([A-Z]{1,3}\d{4,})/);
+            if(m)titles.add(m[1]);
+          });
+        }else{diag.push(`ppd:${r.status}`);}
+      }catch(_){diag.push('ppd:ERR');}
+    }
+
+    // ── Try H: HMLR search API by postcode (several known URL patterns) ───────
+    if(!titles.size&&postcode){
+      const pc=postcode.replace(/([A-Z0-9]+)([0-9][A-Z]{2})$/,'$1 $2');
+      const hmlrUrls=[
+        `https://search.landregistry.gov.uk/api/titles?postcode=${encodeURIComponent(pc)}`,
+        `https://search.landregistry.gov.uk/api/search?q=${encodeURIComponent(pc)}&type=postcode`,
+        `https://find-property-information.service.gov.uk/property-search?postcode=${encodeURIComponent(pc)}&format=json`,
+      ];
+      for(const url of hmlrUrls){
+        if(titles.size)break;
+        try{
+          const r=await fetch(url,{headers:{'Accept':'application/json'}});
+          const txt=await r.text();
+          diag.push(`hmlr:${r.status}`);
+          if(r.ok){
+            // Look for title numbers in response (JSON or HTML)
+            const ms=[...txt.matchAll(/([A-Z]{1,3}\d{5,})/g)];
+            ms.slice(0,20).forEach(m=>titles.add(m[1]));
+            if(titles.size)break;
+          }
+        }catch(_){diag.push('hmlr:ERR');}
+      }
     }
 
     if(!titles.size){
