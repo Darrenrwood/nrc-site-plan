@@ -22,6 +22,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 #hint-bar{display:none;align-items:center;gap:8px;padding:8px 14px;font-size:13px;font-weight:500;flex-shrink:0}
 #hint-bar.vis{display:flex}
 #hint-cancel{margin-left:auto;background:none;border:none;color:#fff;font-size:20px;cursor:pointer;line-height:1}
+#gps-btn{background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);color:#fff;font-size:13px;font-weight:600;border-radius:16px;padding:5px 11px;cursor:pointer;white-space:nowrap;line-height:1.4}
+#gps-btn:disabled{opacity:.45;cursor:default}
 
 #map-wrap{flex:1;position:relative}
 #map{position:absolute;inset:0}
@@ -137,6 +139,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
   <div id="hint-bar">
     <span style="font-size:13px">👆</span>
     <span id="hint-text">Tap map to place</span>
+    <button id="gps-btn" onclick="placeAtGps()">📍 Place here</button>
     <button id="hint-cancel" onclick="clearSelected()">✕</button>
   </div>
 
@@ -2044,13 +2047,14 @@ function openDimModal(sym){
 }
 function confirmDim(){
   if(!dimensionPending)return;
-  const {lat,lng,symbol}=dimensionPending;
+  const {lat,lng,symbol,w3w}=dimensionPending;
   const isCircle=symbol.dims?.type==='circle';
   const v1=parseFloat(document.getElementById('dim1').value);
   if(isNaN(v1)||v1<=0)return;
   const m={lat,lng,symbolId:symbol.id};
   if(isCircle)m.customRadius=v1/2;
   else{m.customWidth=v1;const v2=parseFloat(document.getElementById('dim2')?.value||'0');m.customDepth=(!isNaN(v2)&&v2>0)?v2:v1;}
+  if(w3w)m.w3w=w3w;
   dimensionPending=null;
   hideModal('dim-modal');
   addMarker(m);
@@ -2111,21 +2115,25 @@ function openDrainFieldPeModal(lat,lng){
 }
 function confirmStpPe(pe){
   if(!stpPlacePending)return;
-  const{lat,lng}=stpPlacePending;
+  const{lat,lng,w3w}=stpPlacePending;
   stpPlacePending=null;
   hideModal('stp-pe-modal');
   selectPE(pe);
   const ps=PLANT_SIZES.find(p=>p.pe===pe);
-  addMarker({lat,lng,symbolId:'sewage_treatment_plant',customWidth:ps.length/1000,customDepth:ps.width/1000});
+  const m={lat,lng,symbolId:'sewage_treatment_plant',customWidth:ps.length/1000,customDepth:ps.width/1000};
+  if(w3w)m.w3w=w3w;
+  addMarker(m);
 }
 function confirmDrainFieldPe(pe){
   if(!drainFieldPlacePending)return;
-  const{lat,lng}=drainFieldPlacePending;
+  const{lat,lng,w3w}=drainFieldPlacePending;
   drainFieldPlacePending=null;
   hideModal('stp-pe-modal');
   selectPE(pe);
   const df=DRAIN_FIELD_SIZES[pe];
-  addMarker({lat,lng,symbolId:'drainage_field',customWidth:df.width,customDepth:df.depth});
+  const m={lat,lng,symbolId:'drainage_field',customWidth:df.width,customDepth:df.depth};
+  if(w3w)m.w3w=w3w;
+  addMarker(m);
 }
 function cancelStpPe(){stpPlacePending=null;drainFieldPlacePending=null;hideModal('stp-pe-modal');}
 
@@ -2190,6 +2198,89 @@ function renderPalette(){
 }
 
 function clearSelected(){selectedSymbolId=null;document.getElementById('hint-bar').classList.remove('vis');renderPalette();}
+
+async function placeAtGps(){
+  if(!selectedSymbolId)return;
+  const sym=SYM[selectedSymbolId];
+  if(SINGLE_INSTANCE.has(sym.id)&&placedMarkers.some(m=>m.symbolId===sym.id))return;
+  if(!navigator.geolocation){_showGpsToast('GPS not supported on this device','#7f1d1dee');return;}
+
+  const btn=document.getElementById('gps-btn');
+  btn.textContent='⏳ Locating…';btn.disabled=true;
+
+  let pos;
+  try{
+    pos=await new Promise((res,rej)=>
+      navigator.geolocation.getCurrentPosition(res,rej,{enableHighAccuracy:true,timeout:15000}));
+  }catch(err){
+    btn.textContent='📍 Place here';btn.disabled=false;
+    const msgs={1:'Location permission denied',2:'Location unavailable',3:'Location timed out'};
+    _showGpsToast(msgs[err.code]||'Location error','#7f1d1dee');
+    return;
+  }
+
+  if(!selectedSymbolId){btn.textContent='📍 Place here';btn.disabled=false;return;}
+
+  const{latitude:lat,longitude:lng}=pos.coords;
+
+  const _needsSizeModal=sym.id==='sewage_treatment_plant'||sym.id==='drainage_field'||sym.dims?.userDefined;
+  const _overlaps=_needsSizeModal?_inAnyBuilding(lat,lng):_markerOverlapsBuilding({lat,lng,symbolId:sym.id,rotation:0});
+  if(_overlaps){btn.textContent='📍 Place here';btn.disabled=false;_showBuildingToast(-1);return;}
+
+  let w3w=null;
+  try{
+    const r=await fetch(`https://api.what3words.com/v3/convert-to-3wa?coordinates=${lat},${lng}&key=3BF3K7ZB`);
+    const d=await r.json();
+    if(d.words)w3w=d.words;
+  }catch(_){}
+
+  btn.textContent='📍 Place here';btn.disabled=false;
+  map.panTo([lat,lng]);
+
+  if(sym.id==='sewage_treatment_plant'){
+    stpPlacePending={lat,lng,w3w};
+    _openPeModal('Select plant size','confirmStpPe');
+    return;
+  }
+  if(sym.id==='drainage_field'){
+    if(selectedPlantPE!==null){
+      const df=DRAIN_FIELD_SIZES[selectedPlantPE];
+      const m={lat,lng,symbolId:'drainage_field',customWidth:df.width,customDepth:df.depth};
+      if(w3w)m.w3w=w3w;
+      addMarker(m);
+    }else{
+      drainFieldPlacePending={lat,lng,w3w};
+      _openPeModal('Select plant size for drainage field','confirmDrainFieldPe');
+    }
+    return;
+  }
+  if(sym.dims?.userDefined){
+    dimensionPending={lat,lng,symbol:sym,w3w};
+    openDimModal(sym);
+    return;
+  }
+
+  const m={lat,lng,symbolId:sym.id};
+  if(w3w)m.w3w=w3w;
+  addMarker(m);
+  selectedSymbolId=null;
+  document.getElementById('hint-bar').classList.remove('vis');
+  renderPalette();
+}
+
+function _showGpsToast(msg,bg){
+  let t=document.getElementById('gps-toast');
+  if(!t){
+    t=document.createElement('div');
+    t.id='gps-toast';
+    t.style.cssText='position:absolute;bottom:52px;left:50%;transform:translateX(-50%);z-index:1200;color:#fff;font-size:12px;padding:7px 14px;border-radius:20px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+    document.getElementById('map-wrap').appendChild(t);
+  }
+  t.style.background=bg||'#15803dee';
+  t.textContent=msg;
+  clearTimeout(t._timer);
+  t._timer=setTimeout(()=>{if(t.parentNode)t.remove();},4000);
+}
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function showModal(id){
