@@ -678,6 +678,13 @@ function _expandPoly(poly,d){
   return result;
 }
 
+// True if lat/lng is outside the drawn site boundary polygon (or no boundary exists → false).
+function _outsideBoundary(lat,lng){
+  if(!rings||!rings[0])return false;
+  const o={lat,lng};
+  return !_inPolyM({x:0,y:0},rings[0].map(p=>_ll2m(p,o)));
+}
+
 // True if lat/lng falls inside any loaded building polygon
 function _inAnyBuilding(lat,lng){
   if(!buildingPolygons.length)return false;
@@ -1494,6 +1501,9 @@ function _showBuildingToast(count,failed=false){
   if(count===-1){
     t.style.background='#7f1d1dee';
     t.textContent='⛔ Cannot place here — inside a building';
+  } else if(count===-2){
+    t.style.background='#7f1d1dee';
+    t.textContent='⛔ Cannot place here — outside site boundary';
   } else if(failed){
     t.style.background='#7f1d1dee';
     t.textContent='⚠ Could not load building data';
@@ -1554,6 +1564,7 @@ map.on('click',e=>{
     _showBuildingToast(-1);
     return;
   }
+  if(_outsideBoundary(lat,lng)){_showBuildingToast(-2);return;}
 
   if(sym.id==='sewage_treatment_plant'){
     openStpPeModal(lat,lng);
@@ -1813,8 +1824,9 @@ function parseWKT(wkt){
 
 // ── Markers ───────────────────────────────────────────────────────────────────
 function addMarker(m){
-  // Hard block — no code path may place a marker inside a building.
+  // Hard blocks — no code path may place a marker inside a building or outside the boundary.
   if(buildingPolygons.length&&_markerOverlapsBuilding(m)){_showBuildingToast(-1);return;}
+  if(_outsideBoundary(m.lat,m.lng)){_showBuildingToast(-2);return;}
   m.id=String(++markerCounter);
   // Auto-orient on placement so the correct face points toward its reference marker.
   // Rotation is in CSS degrees (CW from up = north).
@@ -1914,7 +1926,7 @@ function renderMarker(m){
   mk.on('dragend',e=>{
     const {lat,lng}=e.target.getLatLng();
     m.lat=lat;m.lng=lng;
-    if(_markerOverlapsBuilding(m)){
+    if(_markerOverlapsBuilding(m)||_outsideBoundary(m.lat,m.lng)){
       m.lat=m._preDragLat;m.lng=m._preDragLng;
       e.target.setLatLng([m.lat,m.lng]);
       renderMarker(m);renderConnections();
@@ -2509,6 +2521,7 @@ async function placeAtGps(){
   const _needsSizeModal=sym.id==='sewage_treatment_plant'||sym.id==='drainage_field'||sym.dims?.userDefined;
   const _overlaps=_needsSizeModal?_inAnyBuilding(lat,lng):_markerOverlapsBuilding({lat,lng,symbolId:sym.id,rotation:0});
   if(_overlaps){btn.textContent='📍 Place here';btn.disabled=false;_showBuildingToast(-1);return;}
+  if(_outsideBoundary(lat,lng)){btn.textContent='📍 Place here';btn.disabled=false;_showBuildingToast(-2);return;}
 
   let w3w=null;
   try{
