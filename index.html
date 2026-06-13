@@ -2954,9 +2954,9 @@ async function _tryFetchPropertyAtPoint(lat,lng){
     const base='https://www.planning.data.gov.uk/entity.json?dataset=title-boundary';
     let entity=null;
 
-    // Try 1: POINT within entity polygon (semantically clearest for point-in-polygon)
+    // Try 1: find the polygon that contains this GPS point (intersects = point inside polygon)
     const geom=`POINT(${lng.toFixed(6)} ${lat.toFixed(6)})`;
-    const r1=await fetch(`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=within&limit=1`);
+    const r1=await fetch(`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=intersects&limit=1`);
     if(r1.ok){const j=await r1.json();if(j.entities?.length)entity=j.entities[0];}
 
     // Try 2: ~100m bounding box intersect — more forgiving of GPS drift
