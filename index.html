@@ -2976,179 +2976,62 @@ async function _tryFetchPropertyAtPoint(lat,lng){
       }
     }catch(_){}
 
-    // ── Azure Function proxy: server-side WMS (no CORS restriction) ────────────
+    // Single diag array used by all attempts below
     const diag=[];
+    const titles=new Set();
+    const entityMap={};
+
+    // Helper: load geometry for a title number then load it as the main boundary
+    const _selectTitle=t=>{_clearNearbyLayers();_showLocToast(`🏠 ${t} — loading boundary…`,'#15803d',5000);document.getElementById('title-input').value=t;doLoad();};
+
+    // ── Azure Function proxy: calls HMLR WMS server-side (no CORS restriction) ─
     try{
       const r=await fetch(`${API_BASE}/inspire/property-lookup?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}`);
       const j=await r.json();
       diag.push(`api:${r.status}${j.titleNo?'/'+j.titleNo:j.error?'/err':''}`);
-      if(r.ok&&j.titleNo){
-        _showLocToast(`🏠 Found ${j.titleNo} — loading boundary…`,'#15803d',5000);
-        document.getElementById('title-input').value=j.titleNo;
-        doLoad();
-        return;
-      }
-      if(r.ok&&j.titles?.length){
-        // Multiple titles found — draw all for the user to pick
-        _showLocToast(`📐 Found ${j.titles.length} properties nearby — loading…`,'#1d4ed8',30000);
-        const base='https://www.planning.data.gov.uk/entity.json?dataset=title-boundary';
-        const entityMap={};
-        for(const title of j.titles){
-          try{
-            const er=await fetch(`${base}&reference=${encodeURIComponent(title)}&limit=1`);
-            const ej=await er.json();
-            const e=ej.entities?.[0];
-            if(e?.geometry)entityMap[title]=e;
-          }catch(_){}
-        }
-        _clearNearbyLayers();
-        let drawn=0;
-        for(const title of j.titles){
-          const e=entityMap[title];
-          if(!e?.geometry)continue;
-          const rings=parseWKT(e.geometry);
-          if(!rings.length)continue;
-          const poly=L.polygon(rings.map(r=>r.map(c=>[c.lat,c.lng])),
-            {color:'#1d4ed8',weight:2.5,fillColor:'#3b82f6',fillOpacity:0.18,interactive:true}).addTo(map);
-          poly.bindTooltip(title,{permanent:true,direction:'center',className:'nearby-title-lbl'});
-          poly.on('click',()=>{_clearNearbyLayers();document.getElementById('title-input').value=title;doLoad();});
-          _nearbyLayers.push(poly);drawn++;
-        }
-        if(drawn===1){const t=j.titles[0];_clearNearbyLayers();document.getElementById('title-input').value=t;doLoad();return;}
-        if(drawn)_showLocToast(`🏠 ${drawn} properties — tap yours`,'#15803d',20000);
-        else _showLocToast('❌ Found titles but no geometry — type your title number and tap →','#7f1d1d',10000);
-        return;
-      }
-    }catch(_){}
-    // API returned 404 or errored — fall through to client-side attempts
+      if(r.ok&&j.titleNo){_selectTitle(j.titleNo);return;}
+      if(r.ok&&j.titles?.length){j.titles.forEach(t=>titles.add(t));}
+    }catch(_){diag.push('api:ERR');}
 
-    // ── Collect title numbers within ~100m ────────────────────────────────────
-    const dlat=0.0009,dlng=0.0015; // ~100m bbox
-    const bbox=`${lng-dlng},${lat-dlat},${lng+dlng},${lat+dlat}`;
-    const titles=new Set();
-    const entityMap={}; // title → entity (with geometry if we already have it)
-    const diag=[];
-
-    // Try HMLR WMS GetFeatureInfo — query 5 pixel positions (cross pattern) to
-    // avoid missing polygons when GPS falls on a boundary line between parcels
-    const wmsBase=`https://inspire.landregistry.gov.uk/inspire/ows?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=CRS:84&BBOX=${bbox}&WIDTH=100&HEIGHT=100&FEATURE_COUNT=50&INFO_FORMAT=application%2Fjson`;
-    const wmsPixels=[[50,50],[25,50],[75,50],[50,25],[50,75]];
-    for(const[I,J]of wmsPixels){
-      if(titles.size)break;
-      try{
-        const rw=await fetch(`${wmsBase}&I=${I}&J=${J}`);
-        const txt=await rw.text();
-        if(!rw.ok){diag.push(`WMS:${rw.status}`);break;}
-        try{
-          const feats=(JSON.parse(txt).features||[]);
-          feats.forEach(f=>{const t=f.properties?.title_no||f.properties?.TITLE_NO;if(t)titles.add(t);});
-          if(feats.length)diag.push(`WMS:${titles.size}`);
-        }catch(_){
-          [...txt.matchAll(/title_no\s*[=:>]\s*([A-Z]{1,3}\d+)/gi)].forEach(m=>titles.add(m[1]));
-          if(titles.size)diag.push(`WMS-t:${titles.size}`);
-        }
-      }catch(e){diag.push(e.message?.toLowerCase().includes('cors')?'WMS:CORS':'WMS:ERR');break;}
-    }
-    if(!titles.size&&!diag.some(d=>d.startsWith('WMS')))diag.push('WMS:0');
-
-    // Try planning.data.gov.uk bbox spatial query
-    try{
-      const box=`POLYGON((${lng-dlng} ${lat-dlat},${lng+dlng} ${lat-dlat},${lng+dlng} ${lat+dlat},${lng-dlng} ${lat+dlat},${lng-dlng} ${lat-dlat}))`;
-      const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=50`);
-      const j=await r.json();
-      const ents=j.entities||[];
-      diag.push(`pdo-geo:${r.status}/${ents.length}`);
-      ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
-    }catch(_){diag.push('pdo-geo:ERR');}
-
-    // ── Try C: planning.data.gov.uk with entries=all (includes non-current) ─────
+    // ── CORS proxy → HMLR INSPIRE (correct layer + geometry column per docs) ───
+    // corsproxy.io fetches server-side so HMLR doesn't block the browser request
     if(!titles.size){
-      try{
-        const box2=`POLYGON((${lng-dlng} ${lat-dlat},${lng+dlng} ${lat-dlat},${lng+dlng} ${lat+dlat},${lng-dlng} ${lat+dlat},${lng-dlng} ${lat-dlat}))`;
-        const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&entries=all&geometry=${encodeURIComponent(box2)}&geometry_relation=intersects&limit=50`);
-        const j=await r.json();
-        const ents=j.entities||[];
-        diag.push(`pdo-all:${r.status}/${ents.length}`);
-        ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
-      }catch(_){diag.push('pdo-all:ERR');}
-    }
-
-    // ── Try D: planning.data.gov.uk with larger 500m bbox ────────────────────
-    if(!titles.size){
-      try{
-        const bigD=0.005;
-        const bigBox=`POLYGON((${lng-bigD} ${lat-bigD},${lng+bigD} ${lat-bigD},${lng+bigD} ${lat+bigD},${lng-bigD} ${lat+bigD},${lng-bigD} ${lat-bigD}))`;
-        const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&geometry=${encodeURIComponent(bigBox)}&geometry_relation=intersects&limit=50`);
-        const j=await r.json();
-        const ents=j.entities||[];
-        diag.push(`pdo-big:${r.status}/${ents.length}`);
-        ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
-      }catch(_){diag.push('pdo-big:ERR');}
-    }
-
-    // ── Try E: Nominatim reverse geocode → postcode ───────────────────────────
-    let postcode='';
-    let houseNum='';
-    try{
-      const nomR=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,{headers:{'Accept-Language':'en-GB'}});
-      const nom=await nomR.json();
-      postcode=(nom.address?.postcode||'').replace(/\s+/g,'');
-      houseNum=nom.address?.house_number||nom.address?.house_name||'';
-      diag.push(`nom:${postcode||'no-pc'}`);
-    }catch(_){diag.push('nom:ERR');}
-
-    // ── Try F: planning.data.gov.uk text search by postcode ──────────────────
-    if(!titles.size&&postcode){
-      try{
-        const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&q=${encodeURIComponent(postcode)}&limit=20`);
-        const j=await r.json();
-        const ents=j.entities||[];
-        diag.push(`pdo-pc:${r.status}/${ents.length}`);
-        ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
-      }catch(_){diag.push('pdo-pc:ERR');}
-    }
-
-    // ── Try G: HMLR Price Paid Linked Data by postcode ────────────────────────
-    // Returns recent property transactions; may include title numbers
-    if(!titles.size&&postcode){
-      try{
-        const pc=postcode.replace(/([A-Z0-9]+)([0-9][A-Z]{2})$/,'$1 $2'); // re-insert space
-        const r=await fetch(`https://landregistry.data.gov.uk/data/ppi/transaction-record.json?propertyAddress.postcode=${encodeURIComponent(pc)}&_limit=10&_view=basic`,{headers:{'Accept':'application/json'}});
-        if(r.ok){
-          const j=await r.json();
-          const items=j.result?.items||j.items||[];
-          diag.push(`ppd:${items.length}`);
-          items.forEach(item=>{
-            // Price paid records may have a title field or we can extract from URI
-            const t=item.title?.value||item['title-number']?.value||'';
-            const m=t.match(/([A-Z]{1,3}\d{4,})/);
-            if(m)titles.add(m[1]);
-          });
-        }else{diag.push(`ppd:${r.status}`);}
-      }catch(_){diag.push('ppd:ERR');}
-    }
-
-    // ── Try H: HMLR search API by postcode (several known URL patterns) ───────
-    if(!titles.size&&postcode){
-      const pc=postcode.replace(/([A-Z0-9]+)([0-9][A-Z]{2})$/,'$1 $2');
-      const hmlrUrls=[
-        `https://search.landregistry.gov.uk/api/titles?postcode=${encodeURIComponent(pc)}`,
-        `https://search.landregistry.gov.uk/api/search?q=${encodeURIComponent(pc)}&type=postcode`,
-        `https://find-property-information.service.gov.uk/property-search?postcode=${encodeURIComponent(pc)}&format=json`,
-      ];
-      for(const url of hmlrUrls){
+      const{E,N}=_wgs84ToBng(lat,lng);
+      const proxy=u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`;
+      // Attempt WFS with CQL_FILTER=INTERSECTS(geom,...) and EPSG:27700
+      // Layer names to try (GetCapabilities would confirm the exact name)
+      const wfsLayers=['inspire:index_polygon','inspire:BasicPropertyUnit'];
+      for(const layer of wfsLayers){
         if(titles.size)break;
         try{
-          const r=await fetch(url,{headers:{'Accept':'application/json'}});
+          const wfsUrl=`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=${layer}&outputFormat=application/json&count=10&CQL_FILTER=INTERSECTS(geom,POINT(${E} ${N}))&srsName=EPSG:27700`;
+          const r=await fetch(proxy(wfsUrl),{signal:AbortSignal.timeout(10000)});
           const txt=await r.text();
-          diag.push(`hmlr:${r.status}`);
-          if(r.ok){
-            // Look for title numbers in response (JSON or HTML)
-            const ms=[...txt.matchAll(/([A-Z]{1,3}\d{5,})/g)];
-            ms.slice(0,20).forEach(m=>titles.add(m[1]));
-            if(titles.size)break;
-          }
-        }catch(_){diag.push('hmlr:ERR');}
+          if(!r.ok){diag.push(`wfs-${layer.split(':')[1].slice(0,3)}:${r.status}`);continue;}
+          if(txt.includes('disabled')||txt.includes('ServiceException')){diag.push(`wfs:disabled`);break;}
+          const gj=JSON.parse(txt);
+          const feats=gj.features||[];
+          diag.push(`wfs-${layer.split(':')[1].slice(0,3)}:${feats.length}`);
+          feats.forEach(f=>{const t=f.properties?.TITLE_NO||f.properties?.title_no||f.properties?.INSPIREID_LOCALID;if(t)titles.add(t);});
+        }catch(e){diag.push(`wfs:ERR`);}
+      }
+      // Attempt WMS GetFeatureInfo with EPSG:27700 bbox (native CRS)
+      if(!titles.size){
+        const d=200;
+        const wmsBbox=`${E-d},${N-d},${E+d},${N+d}`;
+        const wmsBase=`${INSPIRE}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=EPSG:27700&BBOX=${wmsBbox}&WIDTH=100&HEIGHT=100&FEATURE_COUNT=50&INFO_FORMAT=text%2Fplain`;
+        for(const[I,J]of[[50,50],[25,50],[75,50],[50,25],[50,75]]){
+          if(titles.size)break;
+          try{
+            const r=await fetch(proxy(`${wmsBase}&I=${I}&J=${J}`),{signal:AbortSignal.timeout(8000)});
+            const txt=await r.text();
+            if(!r.ok){diag.push(`wms27700:${r.status}`);break;}
+            const ms=[...txt.matchAll(/TITLE_NO\s*=\s*([A-Z]{1,3}\d+)/gi)];
+            ms.forEach(m=>titles.add(m[1]));
+            if(ms.length)diag.push(`wms27700:${titles.size}`);
+            else if(txt.includes('no features')||txt.trim()==='')diag.push('wms27700:0');
+          }catch(_){diag.push('wms27700:ERR');break;}
+        }
       }
     }
 
