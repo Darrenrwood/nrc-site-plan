@@ -555,6 +555,25 @@ function interpPts(a,b,sp){
   for(let i=1;i<steps;i++){const t=i/steps;pts.push({lat:a.lat+t*(b.lat-a.lat),lng:a.lng+t*(b.lng-a.lng)});}
   return pts;
 }
+// Resample a multi-segment path placing a point every `sp` metres.
+// Used so Catmull-Rom has dense, evenly-spaced control points along a
+// Dijkstra-routed path rather than just the sparse corner vertices.
+function _interpAlongPath(path,sp){
+  if(path.length<2)return[...path];
+  const out=[path[0]];
+  let cumDist=0,target=sp;
+  for(let i=1;i<path.length;i++){
+    const a=path[i-1],b=path[i],segLen=dist(a,b);
+    while(target<=cumDist+segLen){
+      const t=(target-cumDist)/segLen;
+      out.push({lat:a.lat+t*(b.lat-a.lat),lng:a.lng+t*(b.lng-a.lng)});
+      target+=sp;
+    }
+    cumDist+=segLen;
+  }
+  out.push(path[path.length-1]);
+  return out;
+}
 function deflAngle(a,b,c){
   const cl=Math.cos(b.lat*Math.PI/180);
   const ax=(b.lng-a.lng)*111000*cl,ay=(b.lat-a.lat)*111000;
@@ -1074,6 +1093,14 @@ function recheckStpIcOnDrag(stp){
   }
 }
 
+// Symbols that are inspection chambers — gravity pipes may pass through these.
+const IC_SYMBOLS=new Set(['last_inspection_chamber','existing_inspection_chamber','new_inspection_chamber_small','new_inspection_chamber_large','pipe_junction']);
+// Build obstacle clearance polys for a gravity pipe, excluding its endpoint markers and all ICs.
+function _gravObs(markers,...excludeIds){
+  const excl=new Set(excludeIds.filter(Boolean));
+  return markers.filter(m=>!excl.has(m.id)&&!IC_SYMBOLS.has(m.symbolId)).map(_markerClearancePoly);
+}
+
 function computeConns(markers){
   const get=id=>markers.find(m=>m.symbolId===id);
   const stp=get('sewage_treatment_plant'),ic=get('last_inspection_chamber');
@@ -1102,20 +1129,33 @@ function computeConns(markers){
     }
   }
 
-  if(effIc&&stp&&stpIn){const r=_routeTagged(icEdgePt(effIc,stpIn),stpIn);out.push({id:'ic-stp',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});}
-  if(stp&&pump&&stpOut){const r=_routeTagged(stpOut,icEdgePt(pump,stpOut));out.push({id:'stp-pump',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});}
+  if(effIc&&stp&&stpIn){
+    const obs=_gravObs(markers,effIc.id,stp.id);
+    const r=_routeTagged(icEdgePt(effIc,stpIn),stpIn,obs);
+    out.push({id:'ic-stp',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});
+  }
+  if(stp&&pump&&stpOut){
+    const obs=_gravObs(markers,stp.id,pump.id);
+    const r=_routeTagged(stpOut,icEdgePt(pump,stpOut),obs);
+    out.push({id:'stp-pump',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});
+  }
 
   if(pump&&(drain||disc)){
     const pc={lat:pump.lat,lng:pump.lng};
     const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,pc);
     const destEnd=disc?icEdgePt(disc,pc):destCenter;
-    const r=_routeTagged(icEdgePt(pump,destCenter),destEnd);
+    // Pressure pipe must route around ALL other placed markers.
+    const endIds=new Set([pump.id,drain?.id,disc?.id].filter(Boolean));
+    const obs=markers.filter(m=>!endIds.has(m.id)).map(_markerClearancePoly);
+    const r=_routeTagged(icEdgePt(pump,destCenter),destEnd,obs);
     out.push({id:'pump-dest',coords:r.coords,color:'#2563EB',width:3,type:'pressure',routingFailed:r.routingFailed});
   }
   if(stp&&!pump&&stpOut&&(drain||disc)){
     const destCenter=disc?{lat:disc.lat,lng:disc.lng}:drainFace(drain,stpOut);
     const destEnd=disc?icEdgePt(disc,stpOut):destCenter;
-    {const r=_routeTagged(stpOut,destEnd);out.push({id:'stp-dest',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});}
+    const obs=_gravObs(markers,stp.id,drain?.id,disc?.id);
+    const r=_routeTagged(stpOut,destEnd,obs);
+    out.push({id:'stp-dest',coords:r.coords,color:'#92400E',width:3,type:'gravity',routingFailed:r.routingFailed});
   }
   if(kiosk&&elec){
     const kFace=kioskFace(kiosk,elec);
@@ -1138,7 +1178,9 @@ function computeConns(markers){
     const [A,B]=stpFaces(st);
     const ic2={lat:ic.lat,lng:ic.lng};
     const stIn=dist(A,ic2)<dist(B,ic2)?A:B;
-    {const r=_routeTagged(icEdgePt(ic,stIn),stIn);out.push({id:'ic-st',coords:r.coords,color:'#92400E',width:3,type:'gravity',existing:true,routingFailed:r.routingFailed});}
+    const obs=_gravObs(markers,ic.id,st.id);
+    const r=_routeTagged(icEdgePt(ic,stIn),stIn,obs);
+    out.push({id:'ic-st',coords:r.coords,color:'#92400E',width:3,type:'gravity',existing:true,routingFailed:r.routingFailed});
   }
   if(existIcs.length){
     const remaining=[...existIcs];
@@ -1152,7 +1194,9 @@ function computeConns(markers){
       }
       const next=remaining.splice(best,1)[0];
       const e0=icEdgePt(prev,next),e1=icEdgePt(next,prev);
-      {const r=_routeTagged(e0,e1);out.push({id:`eic-${prev.id}-${next.id}`,coords:r.coords,color:'#92400E',width:3,type:'gravity',existing:true,routingFailed:r.routingFailed});}
+      const obs=_gravObs(markers,prev.id,next.id);
+      const r=_routeTagged(e0,e1,obs);
+      out.push({id:`eic-${prev.id}-${next.id}`,coords:r.coords,color:'#92400E',width:3,type:'gravity',existing:true,routingFailed:r.routingFailed});
       prev=next;
     }
   }
@@ -2040,9 +2084,14 @@ function renderConnections(zoomOnly=false){
       // User-dragged waypoints — preserve them as-is
       nw[c.id]=[s,...middle,e];
     } else if(c.coords.length>2){
-      // Auto-routed path (Dijkstra around buildings/barriers) — use it directly
-      // for all pipe types so the route is always respected.
-      nw[c.id]=[...c.coords];
+      if(c.type==='pressure'||c.type==='cable'){
+        // Resample routed path at PRES_SPACING intervals so Catmull-Rom produces
+        // a smooth curve that follows the route rather than a harsh V at sparse corners.
+        nw[c.id]=_interpAlongPath(c.coords,PRES_SPACING);
+      } else {
+        // Gravity pipes: raw Dijkstra vertices define the straight-segment run.
+        nw[c.id]=[...c.coords];
+      }
     } else {
       const pts=interpPts(s,e,sp);
       // Pressure/cable pipes always get at least one draggable midpoint node
