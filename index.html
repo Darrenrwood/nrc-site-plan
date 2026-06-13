@@ -356,6 +356,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 <script>
 // ── Constants ───────────────────────────────────────────────────────────────
 const SYMBOLS = [
+  {id:'well_borehole',label:'Well / Borehole',shortLabel:'Well',category:'existing',color:'#1D4ED8'},
   {id:'existing_inspection_chamber',label:'Existing Inspection Chamber',shortLabel:'Exist IC',category:'existing',color:'#6B7280',dims:{type:'circle',radius:0.3}},
   {id:'last_inspection_chamber',label:'Last Inspection Chamber',shortLabel:'Last IC',category:'existing',color:'#DC2626',dims:{type:'circle',radius:0.3}},
   {id:'existing_septic_tank',label:'Septic Tank (Existing)',shortLabel:'Septic Tank',category:'existing',color:'#78716C',dims:{type:'rectangle',width:2.4,depth:1.2}},
@@ -384,6 +385,7 @@ const CLEARANCES = {
   sewage_treatment_plant:       {building:7, boundary:2,  watercourse:10,well:50},
   existing_septic_tank:         {building:7, boundary:2,  watercourse:10,well:50},
   drainage_field:               {building:15,boundary:2,  watercourse:10,well:50},
+  discharge_point:              {building:0, boundary:0.5,watercourse:0, well:50},
   pumping_station:              {building:1, boundary:1,  watercourse:1, well:0},
   kiosk:                        {building:0.1,boundary:0.5,watercourse:0, well:0},
   new_inspection_chamber_large: {building:0.5,boundary:0.5,watercourse:0,well:0},
@@ -632,6 +634,18 @@ function _segBlocked(a,b,poly,cl){
   }
   return false;
 }
+// True if segment AB (metric) violates the site boundary — either endpoint is
+// outside the boundary polygon, or the segment comes within `cl` metres of any
+// boundary edge (enforcing the preferred 2 m inset from the boundary).
+function _segNearBoundary(a,b,boundaryM,cl){
+  if(!_inPolyM(a,boundaryM)||!_inPolyM(b,boundaryM))return true;
+  if(cl<=0)return false;
+  for(let i=0;i<boundaryM.length;i++){
+    const c=boundaryM[i],d=boundaryM[(i+1)%boundaryM.length];
+    if(_segSegD(a,b,c,d)<cl)return true;
+  }
+  return false;
+}
 
 // Outward-expand each polygon vertex by `d` metres using a proper miter join
 // (parallel edge offset). Each vertex is moved perpendicular to both adjacent
@@ -701,10 +715,16 @@ function _markerOverlapsBuilding(m){
 }
 
 // Single Dijkstra pass at a given clearance. Returns lat/lng path or null if no route.
-function _dijkstraRoute(s,e,polys,cl,o){
+function _dijkstraRoute(s,e,polys,cl,o,boundaryM=null){
   const expanded=polys.map(p=>_expandPoly(p,cl+0.2));
   const nodes=[s,e];
   for(const ep of expanded)for(const v of ep)nodes.push(v);
+  // Add inward-contracted boundary vertices as routing waypoints so the router
+  // can find paths that skirt the inside of the boundary instead of crossing it.
+  if(boundaryM&&boundaryM.length>=3){
+    const inset=_expandPoly(boundaryM,-(cl+0.2));
+    if(inset)for(const v of inset)nodes.push(v);
+  }
   const n=nodes.length;
   const dists=new Float64Array(n).fill(Infinity);
   const prev=new Int32Array(n).fill(-1);
@@ -718,11 +738,11 @@ function _dijkstraRoute(s,e,polys,cl,o){
     for(let v=0;v<n;v++){
       if(vis[v])continue;
       const a=nodes[u],b=nodes[v];
-      // Endpoint edges (touching start=0 or end=1): only block if the segment actually
-      // crosses through a building — a pipe face against a wall is within the clearance
-      // zone but hasn't penetrated the building, so allow it.
+      // Endpoint edges: allow pipe to start/end within clearance zone but
+      // not actually pass through a building or outside the boundary.
       const edgeCl=(u===0||u===1||v===0||v===1)?0:cl;
       if(polys.some(p=>_segBlocked(a,b,p,edgeCl)))continue;
+      if(boundaryM&&_segNearBoundary(a,b,boundaryM,edgeCl))continue;
       const d=dists[u]+Math.hypot(b.x-a.x,b.y-a.y);
       if(d<dists[v]){dists[v]=d;prev[v]=u;}
     }
@@ -771,13 +791,17 @@ function _markerClearancePoly(m){
 // Tries 2 m clearance first; falls back to 500 mm if no route can be found at 2 m.
 function _routeAroundBuildings(startLL,endLL,extraPolys=[]){
   const allPolys=[...buildingPolygons,..._barrierPolygons(),...extraPolys];
-  if(!allPolys.length)return[startLL,endLL];
   const o=startLL;
   const s=_ll2m(startLL,o),e=_ll2m(endLL,o);
   const polys=allPolys.map(ring=>ring.map(p=>_ll2m(p,o)));
+  // Pipes must stay inside the site boundary with preferred 2 m clearance from edges.
+  const boundaryM=rings&&rings[0]?rings[0].map(p=>_ll2m(p,o)):null;
+  if(!polys.length&&!boundaryM)return[startLL,endLL]; // no constraints at all
   for(const cl of[PIPE_BLDG_CLEAR_PREF,PIPE_BLDG_CLEAR_MIN]){
-    if(!polys.some(p=>_segBlocked(s,e,p,cl)))return[startLL,endLL]; // direct path is clear at this tier
-    const result=_dijkstraRoute(s,e,polys,cl,o);
+    const polyOk=!polys.some(p=>_segBlocked(s,e,p,cl));
+    const bndOk=!boundaryM||!_segNearBoundary(s,e,boundaryM,cl);
+    if(polyOk&&bndOk)return[startLL,endLL]; // direct path is clear at this tier
+    const result=_dijkstraRoute(s,e,polys,cl,o,boundaryM);
     if(result)return result;
   }
   // Both routing tiers failed — fall back to straight line.
@@ -842,10 +866,15 @@ function renderBarriers(){
 function effDims(m,s){return{width:m.customWidth??s.dims?.width??1,depth:m.customDepth??s.dims?.depth??1};}
 function effRad(m,s){return m.customRadius??s.dims?.radius??0.5;}
 function hasVio(m){
-  if(!rings)return false;
   const r=CLEARANCES[m.symbolId];
   if(!r)return false;
   const p={lat:m.lat,lng:m.lng};
+  // Well proximity check applies regardless of whether a site boundary is drawn.
+  if(r.well>0){
+    const wells=placedMarkers.filter(w=>w.symbolId==='well_borehole');
+    if(wells.some(w=>dist(p,{lat:w.lat,lng:w.lng})<r.well))return true;
+  }
+  if(!rings)return false;
   if(r.boundary>0&&distToBoundary(p,rings)<r.boundary)return true;
   // A marker whose centre is inside a building is always a violation regardless of
   // the numeric clearance threshold (distToBuildings from inside can exceed the threshold).
@@ -1889,7 +1918,10 @@ function renderMarker(m){
     }
     if(hasVio(m)){violatingIds.add(m.id);confirmingId=m.id;}
     else{violatingIds.delete(m.id);if(confirmingId===m.id)confirmingId=null;}
-    updateVioBanner();
+    // If a well/borehole was moved, recheck ALL markers — nearby discharge points or
+    // drainage fields may have gained or lost a well-proximity violation.
+    if(m.symbolId==='well_borehole')recheckViolations();
+    else updateVioBanner();
     // When an IC is dragged, clear its snap waypoints so the pipe heals first,
     // then proximity is re-evaluated at the new position by renderConnections.
     if(m.symbolId==='new_inspection_chamber_large'||m.symbolId==='new_inspection_chamber_small'){
@@ -1957,6 +1989,7 @@ function removeMarker(id){
 function recheckViolations(){
   violatingIds=new Set();
   for(const m of placedMarkers){if(hasVio(m))violatingIds.add(m.id);}
+  if(confirmingId&&!violatingIds.has(confirmingId))confirmingId=null;
   for(const m of placedMarkers)renderMarker(m);
   updateVioBanner();
 }
@@ -2243,6 +2276,13 @@ function pinHtml(sym,isVio,rot,labelOverride){
   if(sym.id==='pipe_junction'){
     return`<div style="width:16px;height:16px;border-radius:8px;background:#92400E;box-shadow:0 1px 4px rgba(0,0,0,.55);${pulse}"></div>`;
   }
+  if(sym.id==='well_borehole'){
+    // Three concentric circles — standard borehole plan-view symbol.
+    return`<div style="width:34px;height:34px;border-radius:17px;border:2.5px solid ${bc};background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${pulse}">
+      <div style="width:20px;height:20px;border-radius:10px;border:2px solid ${bc};display:flex;align-items:center;justify-content:center;">
+        <div style="width:8px;height:8px;border-radius:4px;background:${bc}"></div>
+      </div></div>`;
+  }
   if(sym.id==='sewage_treatment_plant'){
     return`<div style="width:46px;height:30px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:space-evenly;padding:0 4px;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}${pulse}">
       <div style="width:14px;height:14px;border-radius:50%;background:${sym.color};border:1.5px solid #fff"></div>
@@ -2265,7 +2305,7 @@ function pinHtml(sym,isVio,rot,labelOverride){
     return`<div style="width:42px;height:32px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${pulse}">
       <div style="width:34px;height:24px;border-radius:3px;background:${sym.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">K</div></div>`;
   }
-  const label=labelOverride||{existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[sym.id]||'?';
+  const label=labelOverride||{well_borehole:'W',existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[sym.id]||'?';
   const sz=sym.small?26:34,br=sz/2,bw=sym.small?2:2.5,inner=sym.small?18:24;
   // If label is a number, shrink font slightly so e.g. "10" fits in the circle
   const fs=labelOverride?(labelOverride.length<=2?11:labelOverride.length===3?8:7):11;
@@ -2418,7 +2458,7 @@ function renderPalette(){
       }else if(s.id==='drainage_field'){
         iconHtml=`<div class="df-mini"><div class="df-mh"></div><div class="df-mv"><div class="df-mvs"></div><div class="df-mvs"></div></div><div class="df-mh"></div><div class="df-mv"><div class="df-mvs"></div><div class="df-mvs"></div></div><div class="df-mh"></div></div>`;
       }else{
-        const label={existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',kiosk:'K',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[s.id]||'?';
+        const label={well_borehole:'W',existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',kiosk:'K',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[s.id]||'?';
         const sz=s.small?'sm':'';
         iconHtml=`<div class="pal-ico ${sz}" style="background:${s.color}">${label}</div>`;
       }
