@@ -2938,7 +2938,11 @@ async function _tryFetchPropertyAtPoint(lat,lng){
   // corsproxy.io adds CORS headers server-side — HMLR blocks direct browser requests
   const proxy='https://corsproxy.io/?url=';
   const urls=[
-    `${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-200},${N-200},${E+200},${N+200}`,
+    // BNG bbox — ±400m radius to handle poor GPS and boundary edges
+    `${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-400},${N-400},${E+400},${N+400}`,
+    // WGS84 bbox — fallback in case server interprets bbox in output CRS
+    `${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${(lat-0.004).toFixed(6)},${(lng-0.006).toFixed(6)},${(lat+0.004).toFixed(6)},${(lng+0.006).toFixed(6)},urn:ogc:def:crs:EPSG::4326`,
+    // CQL INTERSECTS with exact point
     `${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=10&CQL_FILTER=INTERSECTS(POLYGON,POINT(${E} ${N}))`,
   ];
   for(const url of urls){
@@ -2964,7 +2968,7 @@ async function _tryFetchPropertyAtPoint(lat,lng){
       return;
     }catch(_){continue;}
   }
-  _showLocToast('ℹ No registered property found here','#374151',6000);
+  _showLocToast(`ℹ No registered property found (E=${E} N=${N})`,'#374151',10000);
 }
 
 function _showLocToast(msg,bg,dur){
