@@ -2983,36 +2983,57 @@ async function _tryFetchPropertyAtPoint(lat,lng){
     const entityMap={}; // title → entity (with geometry if we already have it)
     const diag=[];
 
-    // Try HMLR WMS GetFeatureInfo — FEATURE_COUNT=50 returns up to 50 polygons
-    for(const fmt of['application/json','text/plain']){
+    // Try HMLR WMS GetFeatureInfo — query 5 pixel positions (cross pattern) to
+    // avoid missing polygons when GPS falls on a boundary line between parcels
+    const wmsBase=`https://inspire.landregistry.gov.uk/inspire/ows?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=CRS:84&BBOX=${bbox}&WIDTH=100&HEIGHT=100&FEATURE_COUNT=50&INFO_FORMAT=application%2Fjson`;
+    const wmsPixels=[[50,50],[25,50],[75,50],[50,25],[50,75]];
+    for(const[I,J]of wmsPixels){
       if(titles.size)break;
       try{
-        const wmsUrl=`https://inspire.landregistry.gov.uk/inspire/ows?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=CRS:84&BBOX=${bbox}&WIDTH=100&HEIGHT=100&I=50&J=50&FEATURE_COUNT=50&INFO_FORMAT=${encodeURIComponent(fmt)}`;
-        const rw=await fetch(wmsUrl);
+        const rw=await fetch(`${wmsBase}&I=${I}&J=${J}`);
         const txt=await rw.text();
-        if(!rw.ok){diag.push(`WMS:${rw.status}`);continue;}
-        if(fmt.includes('json')){
-          try{
-            const feats=(JSON.parse(txt).features||[]);
-            feats.forEach(f=>{const t=f.properties?.title_no||f.properties?.TITLE_NO;if(t)titles.add(t);});
-            diag.push(`WMS-j:${titles.size}`);
-          }catch(_){diag.push('WMS-j:parse');}
-        }else{
+        if(!rw.ok){diag.push(`WMS:${rw.status}`);break;}
+        try{
+          const feats=(JSON.parse(txt).features||[]);
+          feats.forEach(f=>{const t=f.properties?.title_no||f.properties?.TITLE_NO;if(t)titles.add(t);});
+          if(feats.length)diag.push(`WMS:${titles.size}`);
+        }catch(_){
           [...txt.matchAll(/title_no\s*[=:>]\s*([A-Z]{1,3}\d+)/gi)].forEach(m=>titles.add(m[1]));
-          diag.push(`WMS-t:${titles.size}`);
+          if(titles.size)diag.push(`WMS-t:${titles.size}`);
         }
-      }catch(e){diag.push(e.message?.toLowerCase().includes('cors')?'WMS:CORS':'WMS:ERR');}
+      }catch(e){diag.push(e.message?.toLowerCase().includes('cors')?'WMS:CORS':'WMS:ERR');break;}
     }
+    if(!titles.size&&!diag.some(d=>d.startsWith('WMS')))diag.push('WMS:0');
 
-    // Try planning.data.gov.uk bbox — may return entities with geometry already attached
+    // Try planning.data.gov.uk bbox spatial query
     try{
       const box=`POLYGON((${lng-dlng} ${lat-dlat},${lng+dlng} ${lat-dlat},${lng+dlng} ${lat+dlat},${lng-dlng} ${lat+dlat},${lng-dlng} ${lat-dlat}))`;
       const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=50`);
       const j=await r.json();
       const ents=j.entities||[];
-      diag.push(`pdo:${r.status}/${ents.length}`);
+      diag.push(`pdo-geo:${r.status}/${ents.length}`);
       ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
-    }catch(_){diag.push('pdo:ERR');}
+    }catch(_){diag.push('pdo-geo:ERR');}
+
+    // Try Nominatim reverse geocode → postcode → planning.data.gov.uk text search
+    // Spatial indexing in planning.data.gov.uk is incomplete; text search may work where spatial doesn't
+    if(!titles.size){
+      try{
+        const nomR=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,{headers:{'Accept-Language':'en-GB'}});
+        const nom=await nomR.json();
+        const postcode=(nom.address?.postcode||'').replace(/\s+/g,'');
+        const road=nom.address?.road||nom.address?.street||'';
+        diag.push(`nom:${postcode||'no-pc'}`);
+        if(postcode){
+          // Search by postcode
+          const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&q=${encodeURIComponent(postcode)}&limit=20`);
+          const j=await r.json();
+          const ents=j.entities||[];
+          diag.push(`pdo-pc:${r.status}/${ents.length}`);
+          ents.forEach(e=>{if(e.reference){titles.add(e.reference);if(e.geometry)entityMap[e.reference]=e;}});
+        }
+      }catch(_){diag.push('nom:ERR');}
+    }
 
     if(!titles.size){
       _showLocToast(`❌ No boundaries found [${diag.join(' ')}] — type your title number and tap →`,'#7f1d1d',12000);
