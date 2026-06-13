@@ -1570,10 +1570,17 @@ async function doLoad(){
   document.getElementById('title-badge').classList.remove('vis');
   try{
     // WFS POST: title number goes in XML body, avoiding URL-encoding/single-quote issues on Safari
+    // text/plain avoids CORS preflight (OPTIONS) — simple request, no preflight needed
     const xmlBody=`<?xml version="1.0"?><wfs:GetFeature xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc" xmlns:inspire="http://inspire.landregistry.gov.uk/inspire" service="WFS" version="1.1.0" maxFeatures="1" outputFormat="application/json"><wfs:Query typeName="inspire:BasicPropertyUnit"><ogc:Filter><ogc:PropertyIsEqualTo><ogc:PropertyName>TITLE_NO</ogc:PropertyName><ogc:Literal>${tn}</ogc:Literal></ogc:PropertyIsEqualTo></ogc:Filter></wfs:Query></wfs:GetFeature>`;
-    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(INSPIRE)}`,{method:'POST',headers:{'Content-Type':'text/xml; charset=utf-8'},body:xmlBody});
+    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(INSPIRE)}`,{method:'POST',headers:{'Content-Type':'text/plain'},body:xmlBody});
     if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
-    const gj=await r.json();
+    const txt=await r.text();
+    if(txt.trim().startsWith('<')){
+      // WFS returned XML error — extract message for debugging
+      const m=txt.match(/ExceptionText[^>]*>([^<]{1,80})/);
+      throw new Error('WFS error: '+(m?m[1].trim():'see console'));
+    }
+    const gj=JSON.parse(txt);
     if(!gj.features?.length){setLoading(false);showErr(`Title number "${tn}" not found. Check it is a Land Registry title number (e.g. AGL347920), not a UPRN.`);return;}
     const feat=gj.features[0];
     rings=parseGeo(feat.geometry);
@@ -1594,10 +1601,9 @@ async function doLoad(){
     cacheTilesForBoundary(rings);  // background — no await
     fetchBuildings(rings);          // background — no await
   }catch(e){
-    const msg=e.message.includes('Failed to fetch')||e.message.includes('NetworkError')||e.message.includes('Load failed')
-      ?'Network error — check internet connection and try again.'
-      :'Could not load boundary: '+e.message;
-    showErr(msg);
+    const isNetwork=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
+    showErr(isNetwork?'Network error — check internet connection and try again.'
+      :`[${e.name||'?'}] Could not load boundary: ${e.message}`);
   }
   finally{setLoading(false);}
 }
