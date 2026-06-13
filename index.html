@@ -2976,6 +2976,50 @@ async function _tryFetchPropertyAtPoint(lat,lng){
       }
     }catch(_){}
 
+    // ── Azure Function proxy: server-side WMS (no CORS restriction) ────────────
+    try{
+      const r=await fetch(`${API_BASE}/inspire/property-lookup?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}`);
+      const j=await r.json();
+      if(r.ok&&j.titleNo){
+        _showLocToast(`🏠 Found ${j.titleNo} — loading boundary…`,'#15803d',5000);
+        document.getElementById('title-input').value=j.titleNo;
+        doLoad();
+        return;
+      }
+      if(r.ok&&j.titles?.length){
+        // Multiple titles found — draw all for the user to pick
+        _showLocToast(`📐 Found ${j.titles.length} properties nearby — loading…`,'#1d4ed8',30000);
+        const base='https://www.planning.data.gov.uk/entity.json?dataset=title-boundary';
+        const entityMap={};
+        for(const title of j.titles){
+          try{
+            const er=await fetch(`${base}&reference=${encodeURIComponent(title)}&limit=1`);
+            const ej=await er.json();
+            const e=ej.entities?.[0];
+            if(e?.geometry)entityMap[title]=e;
+          }catch(_){}
+        }
+        _clearNearbyLayers();
+        let drawn=0;
+        for(const title of j.titles){
+          const e=entityMap[title];
+          if(!e?.geometry)continue;
+          const rings=parseWKT(e.geometry);
+          if(!rings.length)continue;
+          const poly=L.polygon(rings.map(r=>r.map(c=>[c.lat,c.lng])),
+            {color:'#1d4ed8',weight:2.5,fillColor:'#3b82f6',fillOpacity:0.18,interactive:true}).addTo(map);
+          poly.bindTooltip(title,{permanent:true,direction:'center',className:'nearby-title-lbl'});
+          poly.on('click',()=>{_clearNearbyLayers();document.getElementById('title-input').value=title;doLoad();});
+          _nearbyLayers.push(poly);drawn++;
+        }
+        if(drawn===1){const t=j.titles[0];_clearNearbyLayers();document.getElementById('title-input').value=t;doLoad();return;}
+        if(drawn)_showLocToast(`🏠 ${drawn} properties — tap yours`,'#15803d',20000);
+        else _showLocToast('❌ Found titles but no geometry — type your title number and tap →','#7f1d1d',10000);
+        return;
+      }
+    }catch(_){}
+    // API returned 404 or errored — fall through to client-side attempts
+
     // ── Collect title numbers within ~100m ────────────────────────────────────
     const dlat=0.0009,dlng=0.0015; // ~100m bbox
     const bbox=`${lng-dlng},${lat-dlat},${lng+dlng},${lat+dlat}`;
