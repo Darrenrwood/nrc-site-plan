@@ -51,6 +51,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 .spinner{width:20px;height:20px;border:2.5px solid #333;border-top-color:#0a84ff;border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes vio-pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.8)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
+@keyframes loc-pulse{0%{transform:scale(1);opacity:.7}70%{transform:scale(3);opacity:0}100%{transform:scale(3);opacity:0}}
+.loc-dot{position:relative;width:18px;height:18px}
+.loc-dot-inner{position:absolute;inset:0;background:#2563eb;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,.4)}
+.loc-dot-pulse{position:absolute;inset:0;background:rgba(37,99,235,.45);border-radius:50%;animation:loc-pulse 2s ease-out infinite}
 
 #plan-modal{position:fixed;inset:0;z-index:6000;background:#1a1a1a;display:none;flex-direction:column}
 #plan-modal.vis{display:flex}
@@ -2879,12 +2883,65 @@ function openMaterials() {
   showModal('mat-modal');
 }
 
+// ── Live location ─────────────────────────────────────────────────────────────
+let _locMarker=null, _locAccCircle=null, _locInitDone=false;
+
+function _updateLocDot(lat,lng,accuracy){
+  if(!_locMarker){
+    const icon=L.divIcon({className:'',html:'<div class="loc-dot"><div class="loc-dot-pulse"></div><div class="loc-dot-inner"></div></div>',iconSize:[18,18],iconAnchor:[9,9]});
+    _locMarker=L.marker([lat,lng],{icon,interactive:false,zIndexOffset:200}).addTo(map);
+  } else {
+    _locMarker.setLatLng([lat,lng]);
+  }
+  if(!_locAccCircle){
+    _locAccCircle=L.circle([lat,lng],{radius:accuracy,color:'#2563eb',weight:1,fillColor:'#2563eb',fillOpacity:0.08,interactive:false}).addTo(map);
+  } else {
+    _locAccCircle.setLatLng([lat,lng]);
+    _locAccCircle.setRadius(accuracy);
+  }
+}
+
+async function _tryFetchPropertyAtPoint(lat,lng){
+  try{
+    const p=new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
+      typeNames:'inspire:BasicPropertyUnit',
+      CQL_FILTER:`INTERSECTS(GEOM,POINT(${lng} ${lat}))`,
+      outputFormat:'application/json',count:'1'});
+    const r=await fetch(`${INSPIRE}?${p}`,{mode:'cors'});
+    if(!r.ok)return;
+    const gj=await r.json();
+    if(!gj.features?.length)return;
+    const tn=gj.features[0].properties?.TITLE_NO;
+    if(!tn)return;
+    document.getElementById('title-input').value=tn;
+    doLoad();
+  }catch(_){}
+}
+
+function initLocation(){
+  if(!navigator.geolocation)return;
+  navigator.geolocation.watchPosition(
+    pos=>{
+      const{latitude:lat,longitude:lng,accuracy}=pos.coords;
+      _updateLocDot(lat,lng,accuracy);
+      if(!_locInitDone){
+        _locInitDone=true;
+        map.setView([lat,lng],18);
+        if(!rings) _tryFetchPropertyAtPoint(lat,lng);
+      }
+    },
+    null,
+    {enableHighAccuracy:true,timeout:15000,maximumAge:5000}
+  );
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 renderPalette();
 renderPsRows();
 localStorage.removeItem(SAVE_KEY); // always start fresh on page open
 map.on('zoomend', ()=>{ renderConnections(true); }); // true = zoom-only, preserve user waypoints
 map.on('click', hideRotHandle);
+initLocation();
 
 // Allow Enter key in search box
 document.getElementById('title-input').addEventListener('keydown',e=>{if(e.key==='Enter')doLoad();});
