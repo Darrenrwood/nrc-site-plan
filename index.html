@@ -390,6 +390,7 @@ const CLEARANCES = {
 
 const GRAVITY_MAX = 30, GRAV_SPACING = 3, PRES_SPACING = 10;
 const INSPIRE = 'https://inspire.landregistry.gov.uk/inspire/ows';
+const API_BASE = 'https://nrc-staging-api.azurewebsites.net/api';
 
 // ── Persistence ──────────────────────────────────────────────────────────────
 const SAVE_KEY = 'nrc-siteplan-v1';
@@ -2932,53 +2933,20 @@ function _wgs84ToBng(lat,lng){
 }
 
 async function _tryFetchPropertyAtPoint(lat,lng){
-  const {E,N}=_wgs84ToBng(lat,lng);
-  _showLocToast(`🔍 Searching… E=${E} N=${N}`,'#1d4ed8',30000);
-  const log=[];
-
-  // Diagnostic 1: GetCapabilities — tells us if the endpoint is CORS-reachable at all
+  _showLocToast('🔍 Looking up property…','#1d4ed8',20000);
   try{
-    const r=await fetch(`${INSPIRE}?service=WFS&request=GetCapabilities&version=2.0.0`,{mode:'cors'});
-    log.push(`CAPS:${r.status}`);
-  }catch(e){log.push(`CAPS:${e.message.slice(0,12)}`);}
-
-  // Diagnostic 2: no-cors mode — if this gives opaque (no throw) it confirms CORS blocks
-  // the spatial queries; if it also throws it is a genuine network failure
-  try{
-    await fetch(`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=1&BBOX=${E-200},${N-200},${E+200},${N+200}`,{mode:'no-cors'});
-    log.push('nc:opaque');
-  }catch(e){log.push(`nc:${e.message.slice(0,12)}`);}
-
-  // Spatial queries — URLs built with template literals (no URLSearchParams percent-encoding)
-  const spatialAttempts=[
-    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-200},${N-200},${E+200},${N+200}`,label:'v1-raw'},
-    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-200},${N-200},${E+200},${N+200},urn:ogc:def:crs:EPSG::27700`,label:'v1-srs'},
-    {url:`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=5&BBOX=${E-200},${N-200},${E+200},${N+200},urn:ogc:def:crs:EPSG::27700`,label:'v2-srs'},
-  ];
-  for(const {url,label} of spatialAttempts){
-    try{
-      const r=await fetch(url,{mode:'cors'});
-      const txt=await r.text();
-      if(!r.ok){log.push(`${label}:${r.status}`);continue;}
-      if(txt.trim().startsWith('<')){log.push(`${label}:XML`);continue;}
-      let gj;try{gj=JSON.parse(txt);}catch(e){log.push(`${label}:badJSON`);continue;}
-      if(!gj.features?.length){log.push(`${label}:0feat`);continue;}
-      const best=gj.features.reduce((a,b)=>{
-        const sz=f=>{const c=f.geometry?.coordinates?.[0]??[];
-          let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
-          c.flat(1).forEach(([x,y])=>{x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);});
-          return(x1-x0)*(y1-y0);};
-        return sz(a)<sz(b)?a:b;
-      });
-      const found=best.properties?.TITLE_NO;
-      if(!found){log.push(`${label}:noTITLE`);continue;}
-      _showLocToast(`🏠 Found ${found} — loading…`,'#15803d',5000);
-      document.getElementById('title-input').value=found;
+    const r=await fetch(`${API_BASE}/inspire/property-lookup?lat=${lat}&lng=${lng}`);
+    const d=await r.json();
+    if(d.titleNo){
+      _showLocToast(`🏠 Found ${d.titleNo} — loading…`,'#15803d',5000);
+      document.getElementById('title-input').value=d.titleNo;
       doLoad();
-      return;
-    }catch(err){log.push(`${label}:${err.message.slice(0,12)}`);continue;}
+    }else{
+      _showLocToast(`ℹ No registered property here (E=${d.E} N=${d.N})`,'#374151',8000);
+    }
+  }catch(err){
+    _showLocToast(`⚠ Property lookup failed: ${err.message.slice(0,40)}`,'#7f1d1d',8000);
   }
-  _showLocToast(`❌ ${log.join(' ')}`,'#7f1d1d',25000);
 }
 
 function _showLocToast(msg,bg,dur){
