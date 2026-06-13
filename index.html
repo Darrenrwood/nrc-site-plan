@@ -2933,22 +2933,31 @@ function _wgs84ToBng(lat,lng){
 
 async function _tryFetchPropertyAtPoint(lat,lng){
   const {E,N}=_wgs84ToBng(lat,lng);
-  _showLocToast(`🔍 Searching… BNG E=${E} N=${N}`,'#1d4ed8',30000);
+  _showLocToast(`🔍 Searching… E=${E} N=${N}`,'#1d4ed8',30000);
   const log=[];
-  const bngBox=`${E-200},${N-200},${E+200},${N+200},urn:ogc:def:crs:EPSG::27700`;
-  const wgsBox=`${(lng-0.002).toFixed(6)},${(lat-0.002).toFixed(6)},${(lng+0.002).toFixed(6)},${(lat+0.002).toFixed(6)},urn:ogc:def:crs:EPSG::4326`;
-  // Prefer WFS BBOX *parameter* (standard WFS, no CQL, no geometry column name needed)
-  // over CQL spatial filter which HMLR may not CORS-expose on error responses
-  const attempts=[
-    {base:{service:'WFS',version:'1.1.0',request:'GetFeature',typeName:'inspire:BasicPropertyUnit',outputFormat:'application/json',maxFeatures:'10',BBOX:bngBox},label:'v1-BNG'},
-    {base:{service:'WFS',version:'1.1.0',request:'GetFeature',typeName:'inspire:BasicPropertyUnit',outputFormat:'application/json',maxFeatures:'10',BBOX:wgsBox},label:'v1-WGS'},
-    {base:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',outputFormat:'application/json',count:'5',BBOX:bngBox},label:'v2-BNG'},
-    {base:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',outputFormat:'application/json',count:'5',CQL_FILTER:`INTERSECTS(POLYGON,POINT(${E} ${N}))`},label:'CQL-PLG'},
-    {base:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',outputFormat:'application/json',count:'5',CQL_FILTER:`INTERSECTS(shape,POINT(${E} ${N}))`},label:'CQL-shape'},
+
+  // Diagnostic 1: GetCapabilities — tells us if the endpoint is CORS-reachable at all
+  try{
+    const r=await fetch(`${INSPIRE}?service=WFS&request=GetCapabilities&version=2.0.0`,{mode:'cors'});
+    log.push(`CAPS:${r.status}`);
+  }catch(e){log.push(`CAPS:${e.message.slice(0,12)}`);}
+
+  // Diagnostic 2: no-cors mode — if this gives opaque (no throw) it confirms CORS blocks
+  // the spatial queries; if it also throws it is a genuine network failure
+  try{
+    await fetch(`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=1&BBOX=${E-200},${N-200},${E+200},${N+200}`,{mode:'no-cors'});
+    log.push('nc:opaque');
+  }catch(e){log.push(`nc:${e.message.slice(0,12)}`);}
+
+  // Spatial queries — URLs built with template literals (no URLSearchParams percent-encoding)
+  const spatialAttempts=[
+    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-200},${N-200},${E+200},${N+200}`,label:'v1-raw'},
+    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-200},${N-200},${E+200},${N+200},urn:ogc:def:crs:EPSG::27700`,label:'v1-srs'},
+    {url:`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=5&BBOX=${E-200},${N-200},${E+200},${N+200},urn:ogc:def:crs:EPSG::27700`,label:'v2-srs'},
   ];
-  for(const {base,label} of attempts){
+  for(const {url,label} of spatialAttempts){
     try{
-      const r=await fetch(`${INSPIRE}?${new URLSearchParams(base)}`,{mode:'cors'});
+      const r=await fetch(url,{mode:'cors'});
       const txt=await r.text();
       if(!r.ok){log.push(`${label}:${r.status}`);continue;}
       if(txt.trim().startsWith('<')){log.push(`${label}:XML`);continue;}
@@ -2962,14 +2971,14 @@ async function _tryFetchPropertyAtPoint(lat,lng){
         return sz(a)<sz(b)?a:b;
       });
       const found=best.properties?.TITLE_NO;
-      if(!found){log.push(`${label}:noTITLE(${Object.keys(best.properties||{}).slice(0,4).join(',')})`);continue;}
+      if(!found){log.push(`${label}:noTITLE`);continue;}
       _showLocToast(`🏠 Found ${found} — loading…`,'#15803d',5000);
       document.getElementById('title-input').value=found;
       doLoad();
       return;
-    }catch(err){log.push(`${label}:${err.message.slice(0,20)}`);continue;}
+    }catch(err){log.push(`${label}:${err.message.slice(0,12)}`);continue;}
   }
-  _showLocToast(`❌ E=${E} N=${N} | ${log.join(' ')}`,'#7f1d1d',20000);
+  _showLocToast(`❌ ${log.join(' ')}`,'#7f1d1d',25000);
 }
 
 function _showLocToast(msg,bg,dur){
