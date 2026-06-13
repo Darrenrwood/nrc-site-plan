@@ -2977,9 +2977,11 @@ async function _tryFetchPropertyAtPoint(lat,lng){
     }catch(_){}
 
     // ── Azure Function proxy: server-side WMS (no CORS restriction) ────────────
+    const diag=[];
     try{
       const r=await fetch(`${API_BASE}/inspire/property-lookup?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}`);
       const j=await r.json();
+      diag.push(`api:${r.status}${j.titleNo?'/'+j.titleNo:j.error?'/err':''}`);
       if(r.ok&&j.titleNo){
         _showLocToast(`🏠 Found ${j.titleNo} — loading boundary…`,'#15803d',5000);
         document.getElementById('title-input').value=j.titleNo;
