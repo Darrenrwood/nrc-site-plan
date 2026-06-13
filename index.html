@@ -145,7 +145,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <span style="font-size:16px;color:#888">🔍</span>
     <input id="title-input" type="text" value="EX361671" placeholder="Land Registry title number" autocapitalize="characters" autocorrect="off" spellcheck="false"/>
     <button id="search-btn" onclick="doLoad()">→</button>
-  <span id="ver-badge" style="font-size:10px;color:#666;padding:2px 5px;background:#222;border-radius:4px;flex-shrink:0">v11</span>
+  <span id="ver-badge" style="font-size:10px;color:#666;padding:2px 5px;background:#222;border-radius:4px;flex-shrink:0">v12</span>
   </div>
 
   <div id="hint-bar">
@@ -1565,45 +1565,55 @@ function confirmDrawBuilding(){
 async function doLoad(){
   const tn=document.getElementById('title-input').value.trim().toUpperCase();
   if(!tn)return;
-  setLoading(true,'Looking up boundary…');
+  setLoading(true,'Checking WFS…');
   if(boundaryLayer){map.removeLayer(boundaryLayer);boundaryLayer=null;}
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
+
+  // Step 1 — diagnostic: is the WFS service alive at all?
+  let capTag='';
   try{
-    // Use WFS 1.1.0 standard FILTER parameter (OGC Filter XML) instead of vendor CQL_FILTER.
-    // No single quotes anywhere — value goes in <Literal> element.
-    // Double-encoded for corsproxy: %253C→(corsproxy decode)→%3C→(Tomcat decode)→<
-    const r=await fetch('https://corsproxy.io/?url=https%3A%2F%2Finspire.landregistry.gov.uk%2Finspire%2Fows%3Fservice%3DWFS%26version%3D1.1.0%26request%3DGetFeature%26typeName%3Dinspire%3ABasicPropertyUnit%26outputFormat%3Dapplication%2Fjson%26maxFeatures%3D1%26FILTER%3D%253CFilter%253E%253CPropertyIsEqualTo%253E%253CPropertyName%253ETITLE_NO%253C%252FPropertyName%253E%253CLiteral%253E'+encodeURIComponent(tn)+'%253C%252FLiteral%253E%253C%252FPropertyIsEqualTo%253E%253C%252FFilter%253E');
-    if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
+    const capR=await fetch('https://corsproxy.io/?url='+encodeURIComponent('https://inspire.landregistry.gov.uk/inspire/ows?service=WFS&version=1.1.0&request=GetCapabilities'));
+    const capTxt=await capR.text();
+    if(capTxt.includes('WFS_Capabilities'))capTag='[CAP:OK]';
+    else{const m=capTxt.match(/ExceptionText[^>]*>([^<]{1,50})/);capTag=`[CAP:${m?m[1].trim().slice(0,25):'XML'}]`;}
+  }catch(e){capTag=`[CAP:${e.message.slice(0,15)}]`;}
+
+  // Step 2 — GetFeature via allorigins.win (different proxy/IP from corsproxy.io).
+  // %27 in tUrl → encodeURIComponent encodes % → %2527 in the fetch URL
+  // → allorigins decodes once → %27 reaches HMLR → Tomcat decodes → ' for CQL parser.
+  try{
+    setLoading(true,'Loading boundary…');
+    const tUrl='https://inspire.landregistry.gov.uk/inspire/ows?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=1&CQL_FILTER=TITLE_NO=%27'+encodeURIComponent(tn)+'%27';
+    const r=await fetch('https://api.allorigins.win/raw?url='+encodeURIComponent(tUrl));
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
     const txt=await r.text();
     if(txt.trim().startsWith('<')){
       const m=txt.match(/ExceptionText[^>]*>([^<]{1,80})/);
-      throw new Error('WFS error: '+(m?m[1].trim():'see console'));
+      throw new Error('WFS: '+(m?m[1].trim():'see console'));
     }
     const gj=JSON.parse(txt);
-    if(!gj.features?.length){setLoading(false);showErr(`Title number "${tn}" not found. Check it is a Land Registry title number (e.g. AGL347920), not a UPRN.`);return;}
+    if(!gj.features?.length){setLoading(false);showErr(`${capTag} Title "${tn}" not found — check it is a Land Registry title number.`);return;}
     const feat=gj.features[0];
     rings=parseGeo(feat.geometry);
     const flat=rings.flat();
-    if(!flat.length){setLoading(false);showErr('Boundary loaded but has no coordinates.');return;}
+    if(!flat.length){setLoading(false);showErr(`${capTag} Boundary loaded but has no coordinates.`);return;}
     const poly=L.polygon(rings.map(r2=>r2.map(c=>[c.lat,c.lng])),
       {color:'#E11D48',weight:2.5,fillColor:'#E11D48',fillOpacity:0.08}).addTo(map);
     boundaryLayer=poly;
     const bounds=L.latLngBounds(flat.map(c=>[c.lat,c.lng]));
     map.fitBounds(bounds,{padding:[40,40],maxZoom:21});
     const titleNo=feat.properties?.TITLE_NO||tn;
-    const address=titleNo==='EX361671'?'251 Norwich Road, Fakenham':null;
-    document.getElementById('title-badge-text').textContent=address?`${titleNo} · ${address}`:titleNo;
+    document.getElementById('title-badge-text').textContent=titleNo;
     document.getElementById('title-badge').classList.add('vis');
     recheckViolations();
     updateClearBtn();
     autoSave();
-    cacheTilesForBoundary(rings);  // background — no await
-    fetchBuildings(rings);          // background — no await
+    cacheTilesForBoundary(rings);
+    fetchBuildings(rings);
   }catch(e){
     const isNetwork=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
-    showErr(isNetwork?'v11: Network error — check connection.'
-      :`v11 [${e.name||'?'}]: ${e.message}`);
+    showErr(isNetwork?`v12 ${capTag} Network error — check connection.`:`v12 ${capTag} ${e.message}`);
   }
   finally{setLoading(false);}
 }
