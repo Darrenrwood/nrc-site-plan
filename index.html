@@ -2933,46 +2933,44 @@ function _wgs84ToBng(lat,lng){
 
 async function _tryFetchPropertyAtPoint(lat,lng){
   _showLocToast('🔍 Searching for property…','#1d4ed8');
-  // Convert GPS to BNG (EPSG:27700) — the INSPIRE service's native CRS.
-  // WGS84 and BNG differ by ~150 m in the UK, so querying in WGS84 without
-  // a reliable server-side transform consistently misses.
   const {E,N}=_wgs84ToBng(lat,lng);
-  const pad=30; // 30 m search radius
+  // Use CQL_FILTER with native BNG coordinates — same mechanism as the
+  // working title-number lookup, no CRS transform needed on the server.
   const attempts=[
-    // 1. BNG bbox — native CRS, most reliable
-    ()=>new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
-      typeNames:'inspire:BasicPropertyUnit',
-      bbox:`${E-pad},${N-pad},${E+pad},${N+pad},urn:ogc:def:crs:EPSG::27700`,
-      outputFormat:'application/json',count:'5'}),
-    // 2. Wider BNG bbox fallback in case GPS accuracy is poor
-    ()=>new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
-      typeNames:'inspire:BasicPropertyUnit',
-      bbox:`${E-100},${N-100},${E+100},${N+100},urn:ogc:def:crs:EPSG::27700`,
-      outputFormat:'application/json',count:'5'}),
+    // 1. Exact point intersect
+    {p:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',
+      CQL_FILTER:`INTERSECTS(GEOM,POINT(${E} ${N}))`,outputFormat:'application/json',count:'5'},label:'INTERSECTS'},
+    // 2. 50 m bbox via CQL BBOX function
+    {p:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',
+      CQL_FILTER:`BBOX(GEOM,${E-50},${N-50},${E+50},${N+50})`,outputFormat:'application/json',count:'5'},label:'BBOX-50'},
+    // 3. 150 m bbox — covers poor GPS fix
+    {p:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',
+      CQL_FILTER:`BBOX(GEOM,${E-150},${N-150},${E+150},${N+150})`,outputFormat:'application/json',count:'5'},label:'BBOX-150'},
   ];
-  for(const mkParams of attempts){
+  for(const {p,label} of attempts){
     try{
-      const r=await fetch(`${INSPIRE}?${mkParams()}`,{mode:'cors'});
-      if(!r.ok)continue;
-      const gj=await r.json();
-      if(!gj.features?.length)continue;
-      // Smallest bounding box = most likely the plot you're standing on
+      const r=await fetch(`${INSPIRE}?${new URLSearchParams(p)}`,{mode:'cors'});
+      const txt=await r.text();
+      if(!r.ok){_showLocToast(`${label}: HTTP ${r.status} — ${txt.slice(0,60)}`,'#7f1d1d');continue;}
+      let gj;
+      try{gj=JSON.parse(txt);}catch(e){_showLocToast(`${label}: bad JSON — ${txt.slice(0,80)}`,'#7f1d1d');continue;}
+      if(!gj.features?.length){_showLocToast(`${label}: 0 features (BNG E=${E} N=${N})`,'#92400E');continue;}
       const best=gj.features.reduce((a,b)=>{
         const area=f=>{const c=f.geometry?.coordinates?.[0]??[];if(!c.length)return Infinity;
           let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
-          c.flat(1).forEach(([x,y])=>{x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);});
+          c.flat(1).forEach(p2=>{const[x,y]=Array.isArray(p2[0])?p2[0]:p2;x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);});
           return(x1-x0)*(y1-y0);};
         return area(a)<area(b)?a:b;
       });
       const tn=best.properties?.TITLE_NO;
-      if(!tn)continue;
+      if(!tn){_showLocToast(`${label}: found but no TITLE_NO — keys: ${Object.keys(best.properties||{}).join(',')}`,'#92400E');continue;}
       _showLocToast(`🏠 Found ${tn} — loading…`,'#15803d');
       document.getElementById('title-input').value=tn;
       doLoad();
       return;
-    }catch(_){continue;}
+    }catch(err){_showLocToast(`${label}: ${err.message}`,'#7f1d1d');continue;}
   }
-  _showLocToast('ℹ No registered property found here','#3A3A3C');
+  _showLocToast('ℹ No property found (all 3 attempts failed)','#3A3A3C');
 }
 
 function _showLocToast(msg,bg){
