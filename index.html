@@ -145,7 +145,6 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <span style="font-size:16px;color:#888">🔍</span>
     <input id="title-input" type="text" value="EX361671" placeholder="Land Registry title number" autocapitalize="characters" autocorrect="off" spellcheck="false"/>
     <button id="search-btn" onclick="doLoad()">→</button>
-  <span id="ver-badge" style="font-size:10px;color:#666;padding:2px 5px;background:#222;border-radius:4px;flex-shrink:0">v13</span>
   </div>
 
   <div id="hint-bar">
@@ -1587,37 +1586,27 @@ async function doLoad(){
     }
 
     if(!entity){
-      // Diagnostic: fetch one sample record to show available fields.
-      let sampleInfo='';
-      try{const sr=await fetch(`${base}&limit=1`);const sj=await sr.json();
-        sampleInfo=sj.entities?.length?`fields:${Object.keys(sj.entities[0]).join(',')}`:'dataset empty';}
-      catch(_){}
       setLoading(false);
-      showErr(`v13 Title "${tn}" not found on planning.data.gov.uk. ${sampleInfo}`);
+      showErr(`Title number "${tn}" not found. Check it is a registered freehold title number (e.g. EX361671).`);
       return;
     }
 
     const wkt=entity.geometry;
-    if(!wkt){
-      setLoading(false);
-      showErr(`v13 Entity found but no geometry. Keys: ${Object.keys(entity).join(',')}`);
-      return;
-    }
+    if(!wkt){setLoading(false);showErr('Boundary data found but contains no geometry.');return;}
     rings=parseWKT(wkt);
     const flat=rings.flat();
-    if(!flat.length){setLoading(false);showErr('v13 Boundary has no coordinates.');return;}
+    if(!flat.length){setLoading(false);showErr('Boundary loaded but has no coordinates.');return;}
     const poly=L.polygon(rings.map(r2=>r2.map(c=>[c.lat,c.lng])),
       {color:'#E11D48',weight:2.5,fillColor:'#E11D48',fillOpacity:0.08}).addTo(map);
     boundaryLayer=poly;
     const bounds=L.latLngBounds(flat.map(c=>[c.lat,c.lng]));
     map.fitBounds(bounds,{padding:[40,40],maxZoom:21});
-    const titleNo=entity.reference||tn;
-    document.getElementById('title-badge-text').textContent=titleNo;
+    document.getElementById('title-badge-text').textContent=tn;
     document.getElementById('title-badge').classList.add('vis');
     recheckViolations();updateClearBtn();autoSave();cacheTilesForBoundary(rings);fetchBuildings(rings);
   }catch(e){
     const isNet=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
-    showErr(isNet?'v13 Network error — check connection.':`v13 ${e.message?.slice(0,150)}`);
+    showErr(isNet?'Network error — check connection and try again.':`Could not load boundary: ${e.message?.slice(0,120)}`);
   }
   finally{setLoading(false);}
 }
