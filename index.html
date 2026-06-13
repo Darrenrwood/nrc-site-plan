@@ -2949,45 +2949,23 @@ function _wgs84ToBng(lat,lng){
 }
 
 async function _tryFetchPropertyAtPoint(lat,lng){
-  const {E,N}=_wgs84ToBng(lat,lng);
   _showLocToast('🔍 Looking up property…','#1d4ed8',20000);
-  // corsproxy.io adds CORS headers server-side — HMLR blocks direct browser requests
-  const proxy='https://corsproxy.io/?url=';
-  const log=[];
-  const attempts=[
-    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-400},${N-400},${E+400},${N+400}`,label:'BNG'},
-    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${(lat-0.004).toFixed(6)},${(lng-0.006).toFixed(6)},${(lat+0.004).toFixed(6)},${(lng+0.006).toFixed(6)},urn:ogc:def:crs:EPSG::4326`,label:'WGS'},
-    {url:`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=10&CQL_FILTER=INTERSECTS(POLYGON,POINT(${E} ${N}))`,label:'CQL'},
-  ];
-  for(const {url,label} of attempts){
-    try{
-      const r=await fetch(proxy+encodeURIComponent(url));
-      if(!r.ok){log.push(`${label}:${r.status}`);continue;}
-      const txt=await r.text();
-      if(txt.trim().startsWith('<')){
-        // Grab the first meaningful text from the XML exception for debugging
-        const m=txt.match(/ExceptionText[^>]*>([^<]{1,60})/);
-        log.push(`${label}:XML(${m?m[1].trim().slice(0,40):'?'})`);
-        continue;
-      }
-      let gj;try{gj=JSON.parse(txt);}catch(e){log.push(`${label}:badJSON`);continue;}
-      if(!gj.features?.length){log.push(`${label}:0feat`);continue;}
-      const best=gj.features.reduce((a,b)=>{
-        const sz=f=>{const c=f.geometry?.coordinates?.[0]??[];
-          let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
-          c.flat(1).forEach(([x,y])=>{x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);});
-          return(x1-x0)*(y1-y0);};
-        return sz(a)<sz(b)?a:b;
-      });
-      const found=best.properties?.TITLE_NO;
-      if(!found){log.push(`${label}:noTITLE(${Object.keys(best.properties||{}).slice(0,3).join(',')})`);continue;}
-      _showLocToast(`🏠 Found ${found} — loading…`,'#15803d',5000);
-      document.getElementById('title-input').value=found;
-      doLoad();
-      return;
-    }catch(e){log.push(`${label}:${e.message.slice(0,12)}`);continue;}
+  try{
+    // planning.data.gov.uk spatial intersect — same source as title-number lookup, CORS-enabled
+    const geom=`POINT(${lng.toFixed(6)} ${lat.toFixed(6)})`;
+    const r=await fetch(`https://www.planning.data.gov.uk/entity.json?dataset=title-boundary&geometry=${encodeURIComponent(geom)}&geometry_relation=intersects&limit=1`);
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const j=await r.json();
+    if(!j.entities?.length){_showLocToast('❌ No registered title found at this location','#7f1d1d',6000);return;}
+    const ref=j.entities[0].reference;
+    if(!ref){_showLocToast('❌ Boundary found but no title reference','#7f1d1d',6000);return;}
+    _showLocToast(`🏠 Found ${ref} — loading boundary…`,'#15803d',5000);
+    document.getElementById('title-input').value=ref;
+    doLoad();
+  }catch(e){
+    const isNet=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
+    _showLocToast(isNet?'❌ Network error — check connection':'❌ Lookup failed: '+e.message.slice(0,50),'#7f1d1d',6000);
   }
-  _showLocToast(`❌ E=${E} N=${N} | ${log.join(' ')}`,'#7f1d1d',25000);
 }
 
 function _showLocToast(msg,bg,dur){
