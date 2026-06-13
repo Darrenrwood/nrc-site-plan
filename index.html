@@ -2903,15 +2903,25 @@ function _updateLocDot(lat,lng,accuracy){
 
 async function _tryFetchPropertyAtPoint(lat,lng){
   try{
+    // bbox in EPSG:4326 axis order (lat,lng) with a ~20 m radius
+    const eps=0.00018;
     const p=new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
       typeNames:'inspire:BasicPropertyUnit',
-      CQL_FILTER:`INTERSECTS(GEOM,POINT(${lng} ${lat}))`,
-      outputFormat:'application/json',count:'1'});
+      bbox:`${lat-eps},${lng-eps},${lat+eps},${lng+eps},urn:ogc:def:crs:EPSG::4326`,
+      outputFormat:'application/json',count:'5'});
     const r=await fetch(`${INSPIRE}?${p}`,{mode:'cors'});
     if(!r.ok)return;
     const gj=await r.json();
     if(!gj.features?.length)return;
-    const tn=gj.features[0].properties?.TITLE_NO;
+    // Pick the feature with the smallest bounding box — most likely the one you're standing in
+    const best=gj.features.reduce((a,b)=>{
+      const area=f=>{const c=f.geometry?.coordinates?.[0]??[];if(!c.length)return Infinity;
+        let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+        c.forEach(([x,y])=>{minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);});
+        return(maxX-minX)*(maxY-minY);};
+      return area(a)<area(b)?a:b;
+    });
+    const tn=best.properties?.TITLE_NO;
     if(!tn)return;
     document.getElementById('title-input').value=tn;
     doLoad();
