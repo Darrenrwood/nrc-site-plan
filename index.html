@@ -2932,54 +2932,55 @@ function _wgs84ToBng(lat,lng){
 }
 
 async function _tryFetchPropertyAtPoint(lat,lng){
-  _showLocToast('🔍 Searching for property…','#1d4ed8');
   const {E,N}=_wgs84ToBng(lat,lng);
-  // Use CQL_FILTER with native BNG coordinates — same mechanism as the
-  // working title-number lookup, no CRS transform needed on the server.
+  _showLocToast(`🔍 Searching… BNG E=${E} N=${N}`,'#1d4ed8',30000);
+  // HMLR geometry column is "POLYGON"; try both names and both BNG sizes + WGS84 bbox fallback
   const attempts=[
-    // 1. Exact point intersect
-    {p:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',
-      CQL_FILTER:`INTERSECTS(GEOM,POINT(${E} ${N}))`,outputFormat:'application/json',count:'5'},label:'INTERSECTS'},
-    // 2. 50 m bbox via CQL BBOX function
-    {p:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',
-      CQL_FILTER:`BBOX(GEOM,${E-50},${N-50},${E+50},${N+50})`,outputFormat:'application/json',count:'5'},label:'BBOX-50'},
-    // 3. 150 m bbox — covers poor GPS fix
-    {p:{service:'WFS',version:'2.0.0',request:'GetFeature',typeNames:'inspire:BasicPropertyUnit',
-      CQL_FILTER:`BBOX(GEOM,${E-150},${N-150},${E+150},${N+150})`,outputFormat:'application/json',count:'5'},label:'BBOX-150'},
+    {v:'2.0.0',f:`INTERSECTS(POLYGON,POINT(${E} ${N}))`,label:'INT-PLG'},
+    {v:'2.0.0',f:`BBOX(POLYGON,${E-100},${N-100},${E+100},${N+100})`,label:'BBOX100-PLG'},
+    {v:'2.0.0',f:`INTERSECTS(GEOM,POINT(${E} ${N}))`,label:'INT-GEOM'},
+    {v:'2.0.0',f:`BBOX(GEOM,${E-100},${N-100},${E+100},${N+100})`,label:'BBOX100-GEOM'},
+    {v:'1.1.0',f:`BBOX(POLYGON,${E-100},${N-100},${E+100},${N+100})`,label:'v1-BBOX100'},
   ];
-  for(const {p,label} of attempts){
+  const log=[];
+  const tn='inspire:BasicPropertyUnit';
+  for(const {v,f,label} of attempts){
     try{
-      const r=await fetch(`${INSPIRE}?${new URLSearchParams(p)}`,{mode:'cors'});
+      const p=new URLSearchParams({service:'WFS',version:v,request:'GetFeature',
+        typeNames:tn,CQL_FILTER:f,outputFormat:'application/json',count:'5'});
+      const r=await fetch(`${INSPIRE}?${p}`,{mode:'cors'});
       const txt=await r.text();
-      if(!r.ok){_showLocToast(`${label}: HTTP ${r.status} — ${txt.slice(0,60)}`,'#7f1d1d');continue;}
-      let gj;
-      try{gj=JSON.parse(txt);}catch(e){_showLocToast(`${label}: bad JSON — ${txt.slice(0,80)}`,'#7f1d1d');continue;}
-      if(!gj.features?.length){_showLocToast(`${label}: 0 features (BNG E=${E} N=${N})`,'#92400E');continue;}
+      if(!r.ok){log.push(`${label}:${r.status}`);continue;}
+      // GeoServer may return XML OGC exception as HTTP 200
+      if(txt.trim().startsWith('<')){log.push(`${label}:XML`);continue;}
+      let gj;try{gj=JSON.parse(txt);}catch(e){log.push(`${label}:badJSON`);continue;}
+      if(!gj.features?.length){log.push(`${label}:0feat`);continue;}
       const best=gj.features.reduce((a,b)=>{
-        const area=f=>{const c=f.geometry?.coordinates?.[0]??[];if(!c.length)return Infinity;
+        const bb=f2=>{const c=f2.geometry?.coordinates?.[0]??[];
           let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
-          c.flat(1).forEach(p2=>{const[x,y]=Array.isArray(p2[0])?p2[0]:p2;x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);});
+          c.flat(1).forEach(pt=>{const[x,y]=Array.isArray(pt[0])?pt[0]:pt;
+            x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);});
           return(x1-x0)*(y1-y0);};
-        return area(a)<area(b)?a:b;
+        return bb(a)<bb(b)?a:b;
       });
-      const tn=best.properties?.TITLE_NO;
-      if(!tn){_showLocToast(`${label}: found but no TITLE_NO — keys: ${Object.keys(best.properties||{}).join(',')}`,'#92400E');continue;}
-      _showLocToast(`🏠 Found ${tn} — loading…`,'#15803d');
-      document.getElementById('title-input').value=tn;
+      const found=best.properties?.TITLE_NO;
+      if(!found){log.push(`${label}:noTITLE(${Object.keys(best.properties||{}).slice(0,4).join(',')})`);continue;}
+      _showLocToast(`🏠 Found ${found} — loading…`,'#15803d',5000);
+      document.getElementById('title-input').value=found;
       doLoad();
       return;
-    }catch(err){_showLocToast(`${label}: ${err.message}`,'#7f1d1d');continue;}
+    }catch(err){log.push(`${label}:${err.message.slice(0,20)}`);continue;}
   }
-  _showLocToast('ℹ No property found (all 3 attempts failed)','#3A3A3C');
+  _showLocToast(`❌ E=${E} N=${N} | ${log.join(' ')}`,'#7f1d1d',20000);
 }
 
-function _showLocToast(msg,bg){
+function _showLocToast(msg,bg,dur){
   let t=document.getElementById('loc-toast');
   if(!t){t=document.createElement('div');t.id='loc-toast';
-    t.style.cssText='position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:1200;color:#fff;font-size:12px;padding:7px 14px;border-radius:20px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.5)';
+    t.style.cssText='position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:1200;color:#fff;font-size:11px;padding:7px 14px;border-radius:12px;white-space:normal;max-width:90vw;text-align:center;word-break:break-all;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.5)';
     document.getElementById('map-wrap').appendChild(t);}
   t.style.background=bg;t.textContent=msg;
-  clearTimeout(t._t);t._t=setTimeout(()=>{if(t.parentNode)t.remove();},4000);
+  clearTimeout(t._t);t._t=setTimeout(()=>{if(t.parentNode)t.remove();},(dur||4000));
 }
 
 function initLocation(){
