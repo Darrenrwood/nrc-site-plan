@@ -145,7 +145,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <span style="font-size:16px;color:#888">🔍</span>
     <input id="title-input" type="text" value="EX361671" placeholder="Land Registry title number" autocapitalize="characters" autocorrect="off" spellcheck="false"/>
     <button id="search-btn" onclick="doLoad()">→</button>
-  <span id="ver-badge" style="font-size:10px;color:#666;padding:2px 5px;background:#222;border-radius:4px;flex-shrink:0">v10</span>
+  <span id="ver-badge" style="font-size:10px;color:#666;padding:2px 5px;background:#222;border-radius:4px;flex-shrink:0">v11</span>
   </div>
 
   <div id="hint-bar">
@@ -1570,9 +1570,10 @@ async function doLoad(){
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
   try{
-    // WFS 1.1.0 (HMLR only supports 1.x). Single quotes must arrive at HMLR as %27 (not literal '),
-    // so we use %2527 here: corsproxy decodes %25→% giving %27, Tomcat decodes %27→' for GeoServer.
-    const r=await fetch('https://corsproxy.io/?url=https%3A%2F%2Finspire.landregistry.gov.uk%2Finspire%2Fows%3Fservice%3DWFS%26version%3D1.1.0%26request%3DGetFeature%26typeName%3Dinspire%3ABasicPropertyUnit%26outputFormat%3Dapplication%2Fjson%26maxFeatures%3D1%26CQL_FILTER%3DTITLE_NO%3D%2527'+encodeURIComponent(tn)+'%2527');
+    // Use WFS 1.1.0 standard FILTER parameter (OGC Filter XML) instead of vendor CQL_FILTER.
+    // No single quotes anywhere — value goes in <Literal> element.
+    // Double-encoded for corsproxy: %253C→(corsproxy decode)→%3C→(Tomcat decode)→<
+    const r=await fetch('https://corsproxy.io/?url=https%3A%2F%2Finspire.landregistry.gov.uk%2Finspire%2Fows%3Fservice%3DWFS%26version%3D1.1.0%26request%3DGetFeature%26typeName%3Dinspire%3ABasicPropertyUnit%26outputFormat%3Dapplication%2Fjson%26maxFeatures%3D1%26FILTER%3D%253CFilter%253E%253CPropertyIsEqualTo%253E%253CPropertyName%253ETITLE_NO%253C%252FPropertyName%253E%253CLiteral%253E'+encodeURIComponent(tn)+'%253C%252FLiteral%253E%253C%252FPropertyIsEqualTo%253E%253C%252FFilter%253E');
     if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
     const txt=await r.text();
     if(txt.trim().startsWith('<')){
@@ -1601,8 +1602,8 @@ async function doLoad(){
     fetchBuildings(rings);          // background — no await
   }catch(e){
     const isNetwork=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
-    showErr(isNetwork?'v10: Network error — check connection.'
-      :`v10 [${e.name||'?'}]: ${e.message}`);
+    showErr(isNetwork?'v11: Network error — check connection.'
+      :`v11 [${e.name||'?'}]: ${e.message}`);
   }
   finally{setLoading(false);}
 }
