@@ -2901,19 +2901,54 @@ function _updateLocDot(lat,lng,accuracy){
   }
 }
 
+// WGS84 → British National Grid (EPSG:27700)
+// Full Helmert transform + Transverse Mercator — accurate to ~1 m in the UK
+function _wgs84ToBng(lat,lng){
+  const R=x=>x*Math.PI/180;
+  const a1=6378137,b1=6356752.3142,e2_1=1-(b1/a1)**2;
+  const lr=R(lat),nr=R(lng),v1=a1/Math.sqrt(1-e2_1*Math.sin(lr)**2);
+  const X=v1*Math.cos(lr)*Math.cos(nr),Y=v1*Math.cos(lr)*Math.sin(nr),Z=v1*(1-e2_1)*Math.sin(lr);
+  const tx=-446.448,ty=125.157,tz=-542.060;
+  const rx=R(-0.1502/3600),ry=R(-0.2470/3600),rz=R(-0.8421/3600),s=1+20.4894e-6;
+  const X2=tx+s*(X-rz*Y+ry*Z),Y2=ty+s*(rz*X+Y-rx*Z),Z2=tz+s*(-ry*X+rx*Y+Z);
+  const a2=6377563.396,b2=6356256.909,e2_2=1-(b2/a2)**2,p=Math.sqrt(X2**2+Y2**2);
+  let la=Math.atan2(Z2,p*(1-e2_2));
+  for(let i=0;i<10;i++){const v2=a2/Math.sqrt(1-e2_2*Math.sin(la)**2);la=Math.atan2(Z2+e2_2*v2*Math.sin(la),p);}
+  const lo=Math.atan2(Y2,X2);
+  const F0=0.9996012717,la0=R(49),lo0=R(-2),E0=400000,N0=-100000;
+  const n=(a2-b2)/(a2+b2),v3=a2*F0/Math.sqrt(1-e2_2*Math.sin(la)**2);
+  const rho=a2*F0*(1-e2_2)/(1-e2_2*Math.sin(la)**2)**1.5,eta2=v3/rho-1;
+  const M=b2*F0*(
+    (1+n+1.25*n**2+1.25*n**3)*(la-la0)
+    -(3*n+3*n**2+2.625*n**3)*Math.sin(la-la0)*Math.cos(la+la0)
+    +(1.875*n**2+1.875*n**3)*Math.sin(2*(la-la0))*Math.cos(2*(la+la0))
+    -35/24*n**3*Math.sin(3*(la-la0))*Math.cos(3*(la+la0)));
+  const dl=lo-lo0,tl=Math.tan(la),cl=Math.cos(la),sl=Math.sin(la);
+  const I_=M+N0,II_=v3/2*sl*cl,III_=v3/24*sl*cl**3*(5-tl**2+9*eta2);
+  const IIIA_=v3/720*sl*cl**5*(61-58*tl**2+tl**4);
+  const IV_=v3*cl,V_=v3/6*cl**3*(v3/rho-tl**2);
+  const VI_=v3/120*cl**5*(5-18*tl**2+tl**4+14*eta2-58*tl**2*eta2);
+  return{E:Math.round(E0+IV_*dl+V_*dl**3+VI_*dl**5),N:Math.round(I_+II_*dl**2+III_*dl**4+IIIA_*dl**6)};
+}
+
 async function _tryFetchPropertyAtPoint(lat,lng){
   _showLocToast('🔍 Searching for property…','#1d4ed8');
-  // Try CQL CONTAINS first (most precise — polygon contains GPS point)
-  // Fall back to a small bbox query if the first attempt returns nothing
+  // Convert GPS to BNG (EPSG:27700) — the INSPIRE service's native CRS.
+  // WGS84 and BNG differ by ~150 m in the UK, so querying in WGS84 without
+  // a reliable server-side transform consistently misses.
+  const {E,N}=_wgs84ToBng(lat,lng);
+  const pad=30; // 30 m search radius
   const attempts=[
+    // 1. BNG bbox — native CRS, most reliable
     ()=>new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
       typeNames:'inspire:BasicPropertyUnit',
-      CQL_FILTER:`CONTAINS(GEOM,SRID=4326;POINT(${lng} ${lat}))`,
+      bbox:`${E-pad},${N-pad},${E+pad},${N+pad},urn:ogc:def:crs:EPSG::27700`,
       outputFormat:'application/json',count:'5'}),
-    ()=>{const e=0.00018;return new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
+    // 2. Wider BNG bbox fallback in case GPS accuracy is poor
+    ()=>new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
       typeNames:'inspire:BasicPropertyUnit',
-      bbox:`${lng-e},${lat-e},${lng+e},${lat+e},CRS:84`,
-      outputFormat:'application/json',count:'5'});},
+      bbox:`${E-100},${N-100},${E+100},${N+100},urn:ogc:def:crs:EPSG::27700`,
+      outputFormat:'application/json',count:'5'}),
   ];
   for(const mkParams of attempts){
     try{
