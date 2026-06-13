@@ -679,25 +679,11 @@ function _expandPoly(poly,d){
 }
 
 // True if lat/lng is outside the drawn site boundary polygon (or no boundary exists → false).
-function _outsideBoundary(lat,lng){
-  if(!rings||!rings[0])return false;
-  const o={lat,lng};
-  return !_inPolyM({x:0,y:0},rings[0].map(p=>_ll2m(p,o)));
-}
-
-// True if lat/lng falls inside any loaded building polygon
-function _inAnyBuilding(lat,lng){
-  if(!buildingPolygons.length)return false;
-  const o={lat,lng},pt={x:0,y:0};
-  return buildingPolygons.some(ring=>_inPolyM(pt,ring.map(p=>_ll2m(p,o))));
-}
-
-// True if any part of marker m's footprint (centre + all rotated corners, or
-// sampled perimeter for circular footprints) falls inside a building polygon.
-function _markerOverlapsBuilding(m){
-  if(!buildingPolygons.length)return false;
+// Centre + perimeter/corner points that define marker m's footprint in lat/lng.
+// Used for all clearance and boundary checks so the full asset extent is tested.
+function _markerFootprintPts(m){
   const sym=SYM[m.symbolId];
-  const pts=[{lat:m.lat,lng:m.lng}]; // always check centre
+  const pts=[{lat:m.lat,lng:m.lng}];
   if(sym&&sym.dims){
     const c={lat:m.lat,lng:m.lng};
     const rot=m.rotation||0;
@@ -718,7 +704,28 @@ function _markerOverlapsBuilding(m){
       pts.push(...(rot?corners.map(p=>rotatePoint(p,c,rot)):corners));
     }
   }
-  return pts.some(p=>_inAnyBuilding(p.lat,p.lng));
+  return pts;
+}
+
+// True if any part of marker m (or a bare lat/lng point for early tap checks)
+// is outside the drawn site boundary polygon.
+function _outsideBoundary(lat,lng,m=null){
+  if(!rings||!rings[0])return false;
+  const pts=m?_markerFootprintPts(m):[{lat,lng}];
+  return pts.some(({lat:la,lng:lo})=>!_inPolyM({x:0,y:0},rings[0].map(p=>_ll2m(p,{lat:la,lng:lo}))));
+}
+
+// True if lat/lng falls inside any loaded building polygon
+function _inAnyBuilding(lat,lng){
+  if(!buildingPolygons.length)return false;
+  const o={lat,lng},pt={x:0,y:0};
+  return buildingPolygons.some(ring=>_inPolyM(pt,ring.map(p=>_ll2m(p,o))));
+}
+
+// True if any part of marker m's footprint falls inside a building polygon.
+function _markerOverlapsBuilding(m){
+  if(!buildingPolygons.length)return false;
+  return _markerFootprintPts(m).some(p=>_inAnyBuilding(p.lat,p.lng));
 }
 
 // Single Dijkstra pass at a given clearance. Returns lat/lng path or null if no route.
@@ -875,19 +882,22 @@ function effRad(m,s){return m.customRadius??s.dims?.radius??0.5;}
 function hasVio(m){
   const r=CLEARANCES[m.symbolId];
   if(!r)return null;
-  const p={lat:m.lat,lng:m.lng};
-  // Well proximity check applies regardless of whether a site boundary is drawn.
+  // All clearance checks use the full asset footprint so that edges/corners of
+  // large assets (STP, drain field) are correctly tested, not just the centre.
+  const pts=_markerFootprintPts(m);
+  // Well proximity — any part of asset within r.well metres of any well centre.
   if(r.well>0){
     const wells=placedMarkers.filter(w=>w.symbolId==='well_borehole');
-    if(wells.some(w=>dist(p,{lat:w.lat,lng:w.lng})<r.well))
+    if(wells.some(w=>pts.some(p=>dist(p,{lat:w.lat,lng:w.lng})<r.well)))
       return`Within ${r.well}m of a well / borehole (${r.well}m clearance required)`;
   }
   if(!rings)return null;
-  if(r.boundary>0&&distToBoundary(p,rings)<r.boundary)
+  // Boundary clearance — any part of asset within r.boundary metres of any boundary edge.
+  if(r.boundary>0&&pts.some(p=>distToBoundary(p,rings)<r.boundary))
     return`Within ${r.boundary}m of the site boundary (${r.boundary}m clearance required)`;
-  // A marker whose centre is inside a building is always a violation regardless of
-  // the numeric clearance threshold (distToBuildings from inside can exceed the threshold).
-  if(r.building>0&&buildingPolygons.length&&(distToBuildings(p)<r.building||_inAnyBuilding(m.lat,m.lng)))
+  // Building clearance — any footprint point inside or within r.building metres of a building.
+  if(r.building>0&&buildingPolygons.length&&pts.some(p=>
+    _inAnyBuilding(p.lat,p.lng)||distToBuildings(p)<r.building))
     return`Within ${r.building}m of a building (${r.building}m clearance required)`;
   return null;
 }
@@ -1826,7 +1836,7 @@ function parseWKT(wkt){
 function addMarker(m){
   // Hard blocks — no code path may place a marker inside a building or outside the boundary.
   if(buildingPolygons.length&&_markerOverlapsBuilding(m)){_showBuildingToast(-1);return;}
-  if(_outsideBoundary(m.lat,m.lng)){_showBuildingToast(-2);return;}
+  if(_outsideBoundary(m.lat,m.lng,m)){_showBuildingToast(-2);return;}
   m.id=String(++markerCounter);
   // Auto-orient on placement so the correct face points toward its reference marker.
   // Rotation is in CSS degrees (CW from up = north).
@@ -1926,7 +1936,7 @@ function renderMarker(m){
   mk.on('dragend',e=>{
     const {lat,lng}=e.target.getLatLng();
     m.lat=lat;m.lng=lng;
-    if(_markerOverlapsBuilding(m)||_outsideBoundary(m.lat,m.lng)){
+    if(_markerOverlapsBuilding(m)||_outsideBoundary(m.lat,m.lng,m)){
       m.lat=m._preDragLat;m.lng=m._preDragLng;
       e.target.setLatLng([m.lat,m.lng]);
       renderMarker(m);renderConnections();
