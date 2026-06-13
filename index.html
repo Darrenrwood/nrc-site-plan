@@ -1569,10 +1569,10 @@ async function doLoad(){
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
   try{
-    // Build as a plain string — do NOT use new URL() which triggers iOS 17 re-encoding
-    // (%27 → %2527). encodeURIComponent leaves ' unencoded per spec, so we replace manually.
-    const cqlUrl=`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=1&CQL_FILTER=TITLE_NO='${tn}'`;
-    const r=await fetch('https://corsproxy.io/?url='+encodeURIComponent(cqlUrl).replace(/'/g,'%27'));
+    // Hardcode the entire pre-encoded URL — %27 is a literal string in source so no encoding
+    // function can strip or double-encode it. Only the title number is dynamically encoded
+    // (title numbers are always alphanumeric so encodeURIComponent is a no-op).
+    const r=await fetch('https://corsproxy.io/?url=https%3A%2F%2Finspire.landregistry.gov.uk%2Finspire%2Fows%3Fservice%3DWFS%26version%3D2.0.0%26request%3DGetFeature%26typeNames%3Dinspire%3ABasicPropertyUnit%26outputFormat%3Dapplication%2Fjson%26count%3D1%26CQL_FILTER%3DTITLE_NO%3D%27'+encodeURIComponent(tn)+'%27');
     if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
     const txt=await r.text();
     if(txt.trim().startsWith('<')){
