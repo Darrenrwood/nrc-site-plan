@@ -163,6 +163,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
       <button class="mctrl green" id="draw-done-btn" style="display:none" onclick="confirmDrawBoundary()">✓ Close (0 pts)</button>
       <button class="mctrl" id="add-bld-btn" onclick="toggleDrawBuilding()">🏠 Add Building</button>
       <button class="mctrl green" id="add-bld-done-btn" style="display:none" onclick="confirmDrawBuilding()">✓ Close (0 pts)</button>
+      <button class="mctrl" id="barrier-btn" onclick="toggleDrawBarrier()">⛔ Barrier</button>
+      <button class="mctrl green" id="barrier-done-btn" style="display:none" onclick="confirmDrawBarrier()">✓ Done (0 pts)</button>
       <button class="mctrl" onclick="showModal('leg-modal')">☰ Legend</button>
       <button class="mctrl" id="ps-btn" onclick="showModal('ps-modal')">⚙ Plant Size</button>
       <button class="mctrl" onclick="openMaterials()">📋 Materials</button>
@@ -414,6 +416,7 @@ function autoSave() {
       stpTargetIcId,
       buildingPolygons,
       manualBuildingPolygons,
+      barrierLines,
     }));
   } catch(_) {}
 }
@@ -442,6 +445,7 @@ function autoLoad() {
     }
     if (s.manualBuildingPolygons?.length) manualBuildingPolygons = s.manualBuildingPolygons;
     if (s.buildingPolygons?.length) { buildingPolygons = s.buildingPolygons; renderBuildings(); }
+    if (s.barrierLines?.length) { barrierLines = s.barrierLines; renderBarriers(); }
     if (s.badgeText) {
       document.getElementById('title-badge-text').textContent = s.badgeText;
       if (s.badgeVis) document.getElementById('title-badge').classList.add('vis');
@@ -477,6 +481,11 @@ let drawingBoundary = false;
 let drawingBuilding = false;
 let drawBuildingPoints = [];
 let drawBuildingTempLayer = null;
+let barrierLines = []; // [{lat,lng}] polylines — user-drawn routing barriers
+let barrierLayer = null;
+let drawingBarrier = false;
+let drawBarrierPoints = [];
+let drawBarrierTempLayer = null;
 let midwayPickMode = false;
 let midwaySnapPt = null;     // snapped {lat,lng} on the existing pipe
 let midwayPreviewDot = null; // temporary L.circleMarker shown after snap
@@ -705,13 +714,48 @@ function _dijkstraRoute(s,e,polys,cl,o){
   return path.map(pt=>_m2ll(pt,o));
 }
 
-// Route from startLL to endLL in lat/lng, avoiding buildings.
+// Convert user-drawn barrier polylines into thin (~0.3 m wide) rectangular obstacle polygons.
+function _barrierPolygons(){
+  const W=0.3;
+  const obs=[];
+  for(const pts of barrierLines){
+    for(let i=0;i<pts.length-1;i++){
+      const a=pts[i],b=pts[i+1];
+      const cl=Math.cos((a.lat+b.lat)*Math.PI/360);
+      const dE=(b.lng-a.lng)*111319.9*cl,dN=(b.lat-a.lat)*111319.9;
+      const len=Math.hypot(dE,dN);if(len<0.01)continue;
+      const pE=-dN/len*W,pN=dE/len*W; // perpendicular offset W metres
+      obs.push([_offsetLL(a,pE,pN),_offsetLL(b,pE,pN),_offsetLL(b,-pE,-pN),_offsetLL(a,-pE,-pN)]);
+    }
+  }
+  return obs;
+}
+
+// Rectangular clearance polygon around a placed marker — used so cables route around items.
+function _markerClearancePoly(m){
+  const sym=SYM[m.symbolId];
+  const rot=((m.rotation||0)*Math.PI/180);
+  const cosR=Math.cos(rot),sinR=Math.sin(rot);
+  let hw,hd;
+  if(sym&&(sym.id==='sewage_treatment_plant'||sym.id==='existing_septic_tank'||sym.id==='kiosk'||sym.id==='drainage_field')){
+    const d=effDims(m,sym);hw=d.width/2+0.5;hd=d.depth/2+0.5;
+  }else{hw=0.5;hd=0.5;}
+  return[
+    _offsetLL(m, hw*cosR+hd*sinR,-hw*sinR+hd*cosR),
+    _offsetLL(m,-hw*cosR+hd*sinR, hw*sinR+hd*cosR),
+    _offsetLL(m,-hw*cosR-hd*sinR, hw*sinR-hd*cosR),
+    _offsetLL(m, hw*cosR-hd*sinR,-hw*sinR-hd*cosR),
+  ];
+}
+
+// Route from startLL to endLL in lat/lng, avoiding buildings, user barriers, and any extraPolys.
 // Tries 2 m clearance first; falls back to 500 mm if no route can be found at 2 m.
-function _routeAroundBuildings(startLL,endLL){
-  if(!buildingPolygons.length)return[startLL,endLL];
+function _routeAroundBuildings(startLL,endLL,extraPolys=[]){
+  const allPolys=[...buildingPolygons,..._barrierPolygons(),...extraPolys];
+  if(!allPolys.length)return[startLL,endLL];
   const o=startLL;
   const s=_ll2m(startLL,o),e=_ll2m(endLL,o);
-  const polys=buildingPolygons.map(ring=>ring.map(p=>_ll2m(p,o)));
+  const polys=allPolys.map(ring=>ring.map(p=>_ll2m(p,o)));
   for(const cl of[PIPE_BLDG_CLEAR_PREF,PIPE_BLDG_CLEAR_MIN]){
     if(!polys.some(p=>_segBlocked(s,e,p,cl)))return[startLL,endLL]; // direct path is clear at this tier
     const result=_dijkstraRoute(s,e,polys,cl,o);
@@ -725,8 +769,8 @@ function _routeAroundBuildings(startLL,endLL){
 }
 
 // Wrapper that returns {coords, routingFailed} so computeConns can propagate the flag.
-function _routeTagged(startLL,endLL){
-  const coords=_routeAroundBuildings(startLL,endLL);
+function _routeTagged(startLL,endLL,extraPolys=[]){
+  const coords=_routeAroundBuildings(startLL,endLL,extraPolys);
   return{coords,routingFailed:!!coords._failed};
 }
 
@@ -767,6 +811,14 @@ function renderBuildings(){
     L.polygon(ring.map(p=>[p.lat,p.lng]),{color:'#F59E0B',weight:1.5,fillColor:'#F59E0B',fillOpacity:0.18,interactive:false}).addTo(buildingLayerGroup);
   }
   buildingLayerGroup.addTo(map);
+}
+function renderBarriers(){
+  if(barrierLayer){map.removeLayer(barrierLayer);barrierLayer=null;}
+  if(!barrierLines.length)return;
+  barrierLayer=L.layerGroup().addTo(map);
+  for(const pts of barrierLines){
+    L.polyline(pts.map(p=>[p.lat,p.lng]),{color:'#DC2626',weight:3,dashArray:'10 5',interactive:false,pane:'connPane'}).addTo(barrierLayer);
+  }
 }
 function effDims(m,s){return{width:m.customWidth??s.dims?.width??1,depth:m.customDepth??s.dims?.depth??1};}
 function effRad(m,s){return m.customRadius??s.dims?.radius??0.5;}
@@ -1067,12 +1119,16 @@ function computeConns(markers){
   if(kiosk&&elec){
     const kFace=kioskFace(kiosk,elec);
     const eFace=icEdgePt(elec,kiosk);
-    out.push({id:'kiosk-elec',coords:[kFace,eFace],color:'#111827',width:2.5,dashed:true,type:'cable'});
+    const obs=markers.filter(m=>m.id!==kiosk.id&&m.id!==elec.id).map(_markerClearancePoly);
+    const r=_routeTagged(kFace,eFace,obs);
+    out.push({id:'kiosk-elec',coords:r.coords,color:'#111827',width:2.5,dashed:true,type:'cable',routingFailed:r.routingFailed});
   }
   if(kiosk&&pump){
     const kFace=kioskFace(kiosk,pump);
     const pFace=icEdgePt(pump,kiosk);
-    out.push({id:'kiosk-pump',coords:[kFace,pFace],color:'#111827',width:2.5,dashed:true,type:'cable'});
+    const obs=markers.filter(m=>m.id!==kiosk.id&&m.id!==pump.id).map(_markerClearancePoly);
+    const r=_routeTagged(kFace,pFace,obs);
+    out.push({id:'kiosk-pump',coords:r.coords,color:'#111827',width:2.5,dashed:true,type:'cable',routingFailed:r.routingFailed});
   }
   // Last IC → existing ST: always draw this when both are present.
   // Existing ICs are upstream of the last IC and chain to it, not past it to the ST.
@@ -1404,6 +1460,7 @@ function toggleLayer(){
 map.on('click',e=>{
   if(drawingBoundary){addDrawPoint(e.latlng.lat,e.latlng.lng);return;}
   if(drawingBuilding){addDrawBuildingPoint(e.latlng.lat,e.latlng.lng);return;}
+  if(drawingBarrier){addDrawBarrierPoint(e.latlng.lat,e.latlng.lng);return;}
   if(midwayPickMode){_handleMidwayTap(e.latlng.lat,e.latlng.lng);return;}
   if(!selectedSymbolId)return;
   const {lat,lng}=e.latlng;
@@ -1557,6 +1614,50 @@ function confirmDrawBuilding(){
   buildingPolygons.push(newRing);
   renderBuildings();
   recheckViolations();
+  renderConnections();
+  autoSave();
+}
+
+// ── Barrier line draw ─────────────────────────────────────────────────────────
+function toggleDrawBarrier(){
+  if(drawingBarrier)cancelDrawBarrier();else startDrawBarrier();
+}
+function startDrawBarrier(){
+  drawingBarrier=true;drawBarrierPoints=[];
+  if(drawBarrierTempLayer){map.removeLayer(drawBarrierTempLayer);}
+  drawBarrierTempLayer=L.layerGroup().addTo(map);
+  document.getElementById('barrier-btn').textContent='✕ Cancel';
+  document.getElementById('barrier-btn').classList.add('red');
+  document.getElementById('barrier-done-btn').style.display='none';
+}
+function cancelDrawBarrier(){
+  drawingBarrier=false;drawBarrierPoints=[];
+  if(drawBarrierTempLayer){map.removeLayer(drawBarrierTempLayer);drawBarrierTempLayer=null;}
+  document.getElementById('barrier-btn').textContent='⛔ Barrier';
+  document.getElementById('barrier-btn').classList.remove('red');
+  document.getElementById('barrier-done-btn').style.display='none';
+}
+function addDrawBarrierPoint(lat,lng){
+  drawBarrierPoints.push({lat,lng});
+  _updateDrawBarrierPreview();
+}
+function _updateDrawBarrierPreview(){
+  if(!drawBarrierTempLayer)return;
+  drawBarrierTempLayer.clearLayers();
+  const n=drawBarrierPoints.length;
+  if(n>=2)L.polyline(drawBarrierPoints.map(p=>[p.lat,p.lng]),{color:'#DC2626',weight:3,dashArray:'10 5',pane:'connPane'}).addTo(drawBarrierTempLayer);
+  drawBarrierPoints.forEach((pt,i)=>{
+    L.circleMarker([pt.lat,pt.lng],{radius:i===0?7:5,color:'#DC2626',fillColor:i===0?'#DC2626':'#fff',fillOpacity:1,weight:2,interactive:false}).addTo(drawBarrierTempLayer);
+  });
+  const btn=document.getElementById('barrier-done-btn');
+  btn.textContent=`✓ Done (${n} pts)`;
+  btn.style.display=n>=2?'flex':'none';
+}
+function confirmDrawBarrier(){
+  if(drawBarrierPoints.length<2)return;
+  barrierLines.push([...drawBarrierPoints]);
+  cancelDrawBarrier();
+  renderBarriers();
   renderConnections();
   autoSave();
 }
@@ -1828,20 +1929,31 @@ function _visualEdgePt(endPt,fromPt){
   }
   if(!nearest)return endPt;
   const sym=SYM[nearest.symbolId];
-  // Icon half-sizes in pixels (iconSize[0]/2 for width, [1]/2 for height; use the
-  // shorter axis so the line just clears the icon face rather than corner)
-  let halfPx=17; // default 34×34
-  if(sym){
-    if(sym.id==='sewage_treatment_plant'||sym.id==='existing_septic_tank') halfPx=15; // 46×30 → short side=15
-    else if(sym.id==='kiosk') halfPx=16;         // 42×32 → short side=16
-    else if(sym.id==='drainage_field') halfPx=14; // 28×55 → short side=14
-    else if(sym.small||sym.id==='new_inspection_chamber_small') halfPx=13; // 26×26
-    else if(sym.id==='pipe_junction') halfPx=8;   // 16×16
-  }
   const mPx=map.latLngToContainerPoint([nearest.lat,nearest.lng]);
   const fPx=map.latLngToContainerPoint([fromPt.lat,fromPt.lng]);
   const dx=fPx.x-mPx.x,dy=fPx.y-mPx.y,len=Math.hypot(dx,dy);
   if(len<1)return endPt;
+  // Icon half-size in pixels along the pipe's approach direction.
+  // For non-square icons use an ellipse formula so the line reaches whichever face
+  // the pipe actually connects to, regardless of rotation.
+  let halfPx=17; // default 34×34 circular icons
+  if(sym){
+    if(sym.id==='sewage_treatment_plant'||sym.id==='existing_septic_tank') halfPx=15; // 46×30 — pipes hit short faces
+    else if(sym.id==='kiosk'){
+      // 42×32, not rotatable; ellipse formula (a=21, b=16)
+      const u=dx/len,v=dy/len;
+      halfPx=Math.round(336/Math.sqrt(256*u*u+441*v*v));
+    }
+    else if(sym.id==='drainage_field'){
+      // 28px wide × 55px tall (a=14, b=27); rotate approach vector into icon-local axes
+      const r=((nearest.rotation||0)*Math.PI/180);
+      const u=(dx*Math.cos(r)+dy*Math.sin(r))/len; // along icon x-axis (short, 28px)
+      const v=(-dx*Math.sin(r)+dy*Math.cos(r))/len; // along icon y-axis (long, 55px)
+      halfPx=Math.round(378/Math.sqrt(729*u*u+196*v*v)); // ellipse: ab/√(b²u²+a²v²)
+    }
+    else if(sym.small||sym.id==='new_inspection_chamber_small') halfPx=13; // 26×26
+    else if(sym.id==='pipe_junction') halfPx=8;              // 16×16
+  }
   const edgePx={x:mPx.x+(dx/len)*halfPx,y:mPx.y+(dy/len)*halfPx};
   return map.containerPointToLatLng(edgePx);
 }
