@@ -1566,7 +1566,11 @@ function confirmDrawBuilding(){
 // data and exposes a CORS-enabled public JSON API.
 async function doLoad(){
   const tn=document.getElementById('title-input').value.trim().toUpperCase();
-  if(!tn)return;
+  if(!tn){
+    // No title number typed — retry GPS lookup if we have a position
+    if(_lastGpsPos)_tryFetchPropertyAtPoint(_lastGpsPos.lat,_lastGpsPos.lng);
+    return;
+  }
   setLoading(true,'Looking up boundary…');
   if(boundaryLayer){map.removeLayer(boundaryLayer);boundaryLayer=null;}
   rings=null;
@@ -2901,7 +2905,7 @@ function openMaterials() {
 }
 
 // ── Live location ─────────────────────────────────────────────────────────────
-let _locMarker=null, _locAccCircle=null, _locInitDone=false;
+let _locMarker=null, _locAccCircle=null, _locInitDone=false, _lastGpsPos=null;
 
 function _updateLocDot(lat,lng,accuracy){
   if(!_locMarker){
@@ -2965,15 +2969,25 @@ async function _tryFetchPropertyAtPoint(lat,lng){
       if(r2.ok){const j=await r2.json();if(j.entities?.length)entity=j.entities[0];}
     }
 
-    // Try 3: ~200m bounding box — catches GPS drift or edge cases
+    // Try 3: WKT POINT with contains — entity polygon contains this point
     if(!entity){
-      const d=0.002;
-      const box=`POLYGON((${lng-d} ${lat-d},${lng+d} ${lat-d},${lng+d} ${lat+d},${lng-d} ${lat+d},${lng-d} ${lat-d}))`;
-      const r3=await fetch(`${base}&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=5`);
+      const geom=`POINT(${lng.toFixed(6)} ${lat.toFixed(6)})`;
+      const r3=await fetch(`${base}&geometry=${encodeURIComponent(geom)}&geometry_relation=contains&limit=1`);
       if(r3.ok){const j=await r3.json();if(j.entities?.length)entity=j.entities[0];}
     }
 
-    if(!entity){_showLocToast(`❌ No title found (${lat.toFixed(4)},${lng.toFixed(4)})`,'#7f1d1d',8000);return;}
+    // Try 4: 500m bounding box — wide net for GPS drift or boundary gaps
+    if(!entity){
+      const d=0.005;
+      const box=`POLYGON((${lng-d} ${lat-d},${lng+d} ${lat-d},${lng+d} ${lat+d},${lng-d} ${lat+d},${lng-d} ${lat-d}))`;
+      const r4=await fetch(`${base}&geometry=${encodeURIComponent(box)}&geometry_relation=intersects&limit=10`);
+      if(r4.ok){const j=await r4.json();if(j.entities?.length)entity=j.entities[0];}
+    }
+
+    if(!entity){
+      _showLocToast('❌ Boundary not found — clear input and tap → to retry, or type your title number','#7f1d1d',10000);
+      return;
+    }
     const ref=entity.reference;
     if(!ref){_showLocToast('❌ Boundary found but no title reference','#7f1d1d',6000);return;}
     _showLocToast(`🏠 Found ${ref} — loading boundary…`,'#15803d',5000);
@@ -2999,6 +3013,7 @@ function initLocation(){
   navigator.geolocation.watchPosition(
     pos=>{
       const{latitude:lat,longitude:lng,accuracy}=pos.coords;
+      _lastGpsPos={lat,lng};
       _updateLocDot(lat,lng,accuracy);
       if(!_locInitDone){
         _locInitDone=true;
