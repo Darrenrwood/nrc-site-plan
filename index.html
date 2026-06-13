@@ -1569,14 +1569,14 @@ async function doLoad(){
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
   try{
-    // WFS POST: title number goes in XML body, avoiding URL-encoding/single-quote issues on Safari
-    // text/plain avoids CORS preflight (OPTIONS) — simple request, no preflight needed
-    const xmlBody=`<?xml version="1.0"?><wfs:GetFeature xmlns:wfs="http://www.opengis.net/wfs" xmlns:ogc="http://www.opengis.net/ogc" xmlns:inspire="http://inspire.landregistry.gov.uk/inspire" service="WFS" version="1.1.0" maxFeatures="1" outputFormat="application/json"><wfs:Query typeName="inspire:BasicPropertyUnit"><ogc:Filter><ogc:PropertyIsEqualTo><ogc:PropertyName>TITLE_NO</ogc:PropertyName><ogc:Literal>${tn}</ogc:Literal></ogc:PropertyIsEqualTo></ogc:Filter></wfs:Query></wfs:GetFeature>`;
-    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(INSPIRE)}`,{method:'POST',headers:{'Content-Type':'text/plain'},body:xmlBody});
+    // OGC Filter XML in a GET request: no single quotes in the URL (encodeURIComponent leaves
+    // ' literal, causing Safari to reject), no CORS preflight (GET is simple), HMLR supports GET.
+    const filter=`<Filter xmlns="http://www.opengis.net/ogc"><PropertyIsEqualTo><PropertyName>TITLE_NO</PropertyName><Literal>${tn}</Literal></PropertyIsEqualTo></Filter>`;
+    const inspireUrl=`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=1&FILTER=${filter}`;
+    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(inspireUrl)}`);
     if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
     const txt=await r.text();
     if(txt.trim().startsWith('<')){
-      // WFS returned XML error — extract message for debugging
       const m=txt.match(/ExceptionText[^>]*>([^<]{1,80})/);
       throw new Error('WFS error: '+(m?m[1].trim():'see console'));
     }
