@@ -3015,22 +3015,28 @@ async function _tryFetchPropertyAtPoint(lat,lng){
           feats.forEach(f=>{const t=f.properties?.TITLE_NO||f.properties?.title_no||f.properties?.INSPIREID_LOCALID;if(t)titles.add(t);});
         }catch(e){diag.push(`wfs:ERR`);}
       }
-      // Attempt WMS GetFeatureInfo with EPSG:27700 bbox (native CRS)
-      if(!titles.size){
-        const d=200;
-        const wmsBbox=`${E-d},${N-d},${E+d},${N+d}`;
-        const wmsBase=`${INSPIRE}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=EPSG:27700&BBOX=${wmsBbox}&WIDTH=100&HEIGHT=100&FEATURE_COUNT=50&INFO_FORMAT=text%2Fplain`;
+      // Attempt WMS GetFeatureInfo — CRS:84 first (WGS84, lng,lat order)
+      const wmsAttempts=[
+        {crs:'CRS:84',bbox:`${lng-0.003},${lat-0.003},${lng+0.003},${lat+0.003}`,tag:'wms84'},
+        {crs:'EPSG:27700',bbox:`${E-200},${N-200},${E+200},${N+200}`,tag:'wms27700'},
+      ];
+      for(const{crs,bbox:wmsBbox,tag}of wmsAttempts){
+        if(titles.size)break;
+        const wmsBase=`${INSPIRE}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo&LAYERS=inspire:index_polygon&QUERY_LAYERS=inspire:index_polygon&CRS=${crs}&BBOX=${wmsBbox}&WIDTH=100&HEIGHT=100&FEATURE_COUNT=50&INFO_FORMAT=text%2Fplain`;
         for(const[I,J]of[[50,50],[25,50],[75,50],[50,25],[50,75]]){
           if(titles.size)break;
           try{
-            const r=await fetch(proxy(`${wmsBase}&I=${I}&J=${J}`),{signal:AbortSignal.timeout(8000)});
+            const r=await fetch(proxy(`${wmsBase}&I=${I}&J=${J}`),{signal:AbortSignal.timeout(10000)});
             const txt=await r.text();
-            if(!r.ok){diag.push(`wms27700:${r.status}`);break;}
+            if(!r.ok){diag.push(`${tag}:${r.status}`);break;}
             const ms=[...txt.matchAll(/TITLE_NO\s*=\s*([A-Z]{1,3}\d+)/gi)];
+            // also catch title_no in XML/JSON formats
+            for(const m of txt.matchAll(/title_no[^>]*>\s*([A-Z]{1,3}\d+)/gi))ms.push(m);
             ms.forEach(m=>titles.add(m[1]));
-            if(ms.length)diag.push(`wms27700:${titles.size}`);
-            else if(txt.includes('no features')||txt.trim()==='')diag.push('wms27700:0');
-          }catch(_){diag.push('wms27700:ERR');break;}
+            // always log — include first chars of response for diagnosis
+            const snip=txt.trim().slice(0,30).replace(/\s+/g,' ');
+            diag.push(ms.length?`${tag}:${titles.size}`:`${tag}:0[${snip}]`);
+          }catch(_){diag.push(`${tag}:ERR`);break;}
         }
       }
     }
