@@ -2950,7 +2950,7 @@ function _showLocToast(msg,bg){
 }
 
 function initLocation(){
-  if(!navigator.geolocation)return;
+  if(!navigator.geolocation){_showLocToast('⚠ GPS not available on this device','#7f1d1d');return;}
   navigator.geolocation.watchPosition(
     pos=>{
       const{latitude:lat,longitude:lng,accuracy}=pos.coords;
@@ -2962,7 +2962,11 @@ function initLocation(){
         if(!rings) _tryFetchPropertyAtPoint(lat,lng);
       }
     },
-    null,
+    err=>{
+      const msgs={1:'Location permission denied — allow in Settings → Safari → Location',
+                  2:'Location unavailable',3:'Location timed out'};
+      _showLocToast('⚠ '+(msgs[err.code]||'Location error'),'#7f1d1d');
+    },
     {enableHighAccuracy:true,timeout:15000,maximumAge:5000}
   );
 }
