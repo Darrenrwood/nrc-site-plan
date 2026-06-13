@@ -2947,7 +2947,12 @@ async function _tryFetchPropertyAtPoint(lat,lng){
       const r=await fetch(proxy+encodeURIComponent(url));
       if(!r.ok){log.push(`${label}:${r.status}`);continue;}
       const txt=await r.text();
-      if(txt.trim().startsWith('<')){log.push(`${label}:XML`);continue;}
+      if(txt.trim().startsWith('<')){
+        // Grab the first meaningful text from the XML exception for debugging
+        const m=txt.match(/ExceptionText[^>]*>([^<]{1,60})/);
+        log.push(`${label}:XML(${m?m[1].trim().slice(0,40):'?'})`);
+        continue;
+      }
       let gj;try{gj=JSON.parse(txt);}catch(e){log.push(`${label}:badJSON`);continue;}
       if(!gj.features?.length){log.push(`${label}:0feat`);continue;}
       const best=gj.features.reduce((a,b)=>{
