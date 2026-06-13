@@ -1608,6 +1608,8 @@ async function doLoad(){
     document.getElementById('title-badge-text').textContent=tn;
     document.getElementById('title-badge').classList.add('vis');
     recheckViolations();updateClearBtn();autoSave();cacheTilesForBoundary(rings);fetchBuildings(rings);
+    // Remember this title + its polygon centre for GPS auto-load next time
+    try{const c=bounds.getCenter();localStorage.setItem('nrc_last_title_pos',JSON.stringify({title:tn,lat:c.lat,lng:c.lng}));}catch(_){}
   }catch(e){
     const isNet=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
     showErr(isNet?'Network error — check connection and try again.':`Could not load boundary: ${e.message?.slice(0,120)}`);
@@ -2955,6 +2957,21 @@ function _wgs84ToBng(lat,lng){
 async function _tryFetchPropertyAtPoint(lat,lng){
   _showLocToast('🔍 Looking up property…','#1d4ed8',20000);
   try{
+    // ── Fast path: previously remembered title near this GPS position ──────────
+    try{
+      const saved=JSON.parse(localStorage.getItem('nrc_last_title_pos')||'null');
+      if(saved?.title&&saved?.lat!=null&&saved?.lng!=null){
+        const dlat=lat-saved.lat,dlng=(lng-saved.lng)*Math.cos(lat*Math.PI/180);
+        const dist=Math.sqrt(dlat*dlat+dlng*dlng)*111320; // metres
+        if(dist<500){
+          _showLocToast(`🏠 ${saved.title} (last used) — loading boundary…`,'#15803d',5000);
+          document.getElementById('title-input').value=saved.title;
+          doLoad();
+          return;
+        }
+      }
+    }catch(_){}
+
     // ── Try 1: HMLR WMS GetFeatureInfo ────────────────────────────────────────
     // WFS is disabled but WMS is a different GeoServer service — GetFeatureInfo
     // returns the title_no attribute for the polygon at the clicked point.
