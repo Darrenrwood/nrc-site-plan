@@ -2939,22 +2939,20 @@ async function _tryFetchPropertyAtPoint(lat,lng){
   _showLocToast('🔍 Looking up property…','#1d4ed8',20000);
   // corsproxy.io adds CORS headers server-side — HMLR blocks direct browser requests
   const proxy='https://corsproxy.io/?url=';
-  const urls=[
-    // BNG bbox — ±400m radius to handle poor GPS and boundary edges
-    `${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-400},${N-400},${E+400},${N+400}`,
-    // WGS84 bbox — fallback in case server interprets bbox in output CRS
-    `${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${(lat-0.004).toFixed(6)},${(lng-0.006).toFixed(6)},${(lat+0.004).toFixed(6)},${(lng+0.006).toFixed(6)},urn:ogc:def:crs:EPSG::4326`,
-    // CQL INTERSECTS with exact point
-    `${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=10&CQL_FILTER=INTERSECTS(POLYGON,POINT(${E} ${N}))`,
+  const log=[];
+  const attempts=[
+    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${E-400},${N-400},${E+400},${N+400}`,label:'BNG'},
+    {url:`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=10&BBOX=${(lat-0.004).toFixed(6)},${(lng-0.006).toFixed(6)},${(lat+0.004).toFixed(6)},${(lng+0.006).toFixed(6)},urn:ogc:def:crs:EPSG::4326`,label:'WGS'},
+    {url:`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=10&CQL_FILTER=INTERSECTS(POLYGON,POINT(${E} ${N}))`,label:'CQL'},
   ];
-  for(const url of urls){
+  for(const {url,label} of attempts){
     try{
       const r=await fetch(proxy+encodeURIComponent(url));
-      if(!r.ok)continue;
+      if(!r.ok){log.push(`${label}:${r.status}`);continue;}
       const txt=await r.text();
-      if(txt.trim().startsWith('<'))continue;
-      const gj=JSON.parse(txt);
-      if(!gj.features?.length)continue;
+      if(txt.trim().startsWith('<')){log.push(`${label}:XML`);continue;}
+      let gj;try{gj=JSON.parse(txt);}catch(e){log.push(`${label}:badJSON`);continue;}
+      if(!gj.features?.length){log.push(`${label}:0feat`);continue;}
       const best=gj.features.reduce((a,b)=>{
         const sz=f=>{const c=f.geometry?.coordinates?.[0]??[];
           let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
@@ -2963,14 +2961,14 @@ async function _tryFetchPropertyAtPoint(lat,lng){
         return sz(a)<sz(b)?a:b;
       });
       const found=best.properties?.TITLE_NO;
-      if(!found)continue;
+      if(!found){log.push(`${label}:noTITLE(${Object.keys(best.properties||{}).slice(0,3).join(',')})`);continue;}
       _showLocToast(`🏠 Found ${found} — loading…`,'#15803d',5000);
       document.getElementById('title-input').value=found;
       doLoad();
       return;
-    }catch(_){continue;}
+    }catch(e){log.push(`${label}:${e.message.slice(0,12)}`);continue;}
   }
-  _showLocToast(`ℹ No registered property found (E=${E} N=${N})`,'#374151',10000);
+  _showLocToast(`❌ E=${E} N=${N} | ${log.join(' ')}`,'#7f1d1d',25000);
 }
 
 function _showLocToast(msg,bg,dur){
