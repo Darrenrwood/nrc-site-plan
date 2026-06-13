@@ -1925,7 +1925,15 @@ function recheckViolations(){
 function _visualEdgePt(endPt,fromPt){
   let nearest=null,minD=20;
   for(const m of placedMarkers){
-    const d=dist(endPt,{lat:m.lat,lng:m.lng});
+    // For STP/ST, measure to the nearer FACE (not centre) so a nearby circle
+    // marker can't outbid the rectangle when the endpoint is already on its face.
+    let d;
+    if(m.symbolId==='sewage_treatment_plant'||m.symbolId==='existing_septic_tank'){
+      const[fA,fB]=stpFaces(m);
+      d=Math.min(dist(endPt,fA),dist(endPt,fB));
+    }else{
+      d=dist(endPt,{lat:m.lat,lng:m.lng});
+    }
     if(d<minD){minD=d;nearest=m;}
   }
   if(!nearest)return endPt;
@@ -1934,28 +1942,48 @@ function _visualEdgePt(endPt,fromPt){
   const fPx=map.latLngToContainerPoint([fromPt.lat,fromPt.lng]);
   const dx=fPx.x-mPx.x,dy=fPx.y-mPx.y,len=Math.hypot(dx,dy);
   if(len<1)return endPt;
-  // Icon half-size in pixels along the pipe's approach direction.
-  // For non-square icons use an ellipse formula so the line reaches whichever face
-  // the pipe actually connects to, regardless of rotation.
-  let halfPx=17; // default 34×34 circular icons
+
   if(sym){
-    if(sym.id==='sewage_treatment_plant'||sym.id==='existing_septic_tank') halfPx=15; // 46×30 — pipes hit short faces
-    else if(sym.id==='kiosk'){
+    if(sym.id==='sewage_treatment_plant'||sym.id==='existing_septic_tank'){
+      // Always pin to the SHORT-SIDE face centre (half of 46px long dimension = 23px).
+      // CSS rotate(deg) is clockwise, so long-axis direction in screen coords is (cos,sin).
+      const rot=((nearest.rotation||0)*Math.PI/180);
+      const h=23; // halfLongPx
+      const fA={x:mPx.x+h*Math.cos(rot),y:mPx.y+h*Math.sin(rot)};
+      const fB={x:mPx.x-h*Math.cos(rot),y:mPx.y-h*Math.sin(rot)};
+      // Pick the face on the same side as fromPt (pipe approaches from there)
+      const dA=Math.hypot(fA.x-fPx.x,fA.y-fPx.y);
+      const dB=Math.hypot(fB.x-fPx.x,fB.y-fPx.y);
+      return map.containerPointToLatLng(dA<dB?fA:fB);
+    }
+    if(sym.id==='kiosk'){
       // 42×32, not rotatable; ellipse formula (a=21, b=16)
       const u=dx/len,v=dy/len;
-      halfPx=Math.round(336/Math.sqrt(256*u*u+441*v*v));
+      const h=Math.round(336/Math.sqrt(256*u*u+441*v*v));
+      return map.containerPointToLatLng({x:mPx.x+u*h,y:mPx.y+v*h});
     }
-    else if(sym.id==='drainage_field'){
-      // 28px wide × 55px tall (a=14, b=27); rotate approach vector into icon-local axes
+    if(sym.id==='drainage_field'){
+      // 28px wide × 55px tall; ellipse in icon-local axes (a=14, b=27)
       const r=((nearest.rotation||0)*Math.PI/180);
-      const u=(dx*Math.cos(r)+dy*Math.sin(r))/len; // along icon x-axis (short, 28px)
-      const v=(-dx*Math.sin(r)+dy*Math.cos(r))/len; // along icon y-axis (long, 55px)
-      halfPx=Math.round(378/Math.sqrt(729*u*u+196*v*v)); // ellipse: ab/√(b²u²+a²v²)
+      const u=(dx*Math.cos(r)+dy*Math.sin(r))/len;
+      const v=(-dx*Math.sin(r)+dy*Math.cos(r))/len;
+      const h=Math.round(378/Math.sqrt(729*u*u+196*v*v));
+      const edgePx={x:mPx.x+(dx/len)*h,y:mPx.y+(dy/len)*h};
+      return map.containerPointToLatLng(edgePx);
     }
-    else if(sym.small||sym.id==='new_inspection_chamber_small') halfPx=13; // 26×26
-    else if(sym.id==='pipe_junction') halfPx=8;              // 16×16
+    if(sym.small||sym.id==='new_inspection_chamber_small'){
+      // 26×26 icon, 2px border → outer edge 13px; add 2px so stroke cap clears border
+      const edgePx={x:mPx.x+(dx/len)*15,y:mPx.y+(dy/len)*15};
+      return map.containerPointToLatLng(edgePx);
+    }
+    if(sym.id==='pipe_junction'){
+      const edgePx={x:mPx.x+(dx/len)*8,y:mPx.y+(dy/len)*8};
+      return map.containerPointToLatLng(edgePx);
+    }
   }
-  const edgePx={x:mPx.x+(dx/len)*halfPx,y:mPx.y+(dy/len)*halfPx};
+  // Default: 34×34 circular icons (IC large, pump, discharge, electrical).
+  // Outer edge = 17px; add 2px so the pipe's rounded stroke cap clears the border ring.
+  const edgePx={x:mPx.x+(dx/len)*19,y:mPx.y+(dy/len)*19};
   return map.containerPointToLatLng(edgePx);
 }
 
@@ -2011,10 +2039,9 @@ function renderConnections(zoomOnly=false){
     if(isManual && middle && middle.length>0 && !endpointsMoved){
       // User-dragged waypoints — preserve them as-is
       nw[c.id]=[s,...middle,e];
-    } else if(c.type==='gravity' && c.coords.length>2){
-      // Auto-routed gravity pipe — use the freshly computed path.
-      // Face positions are now zoom-independent (real-world metres) so
-      // this result is stable across zoom levels.
+    } else if(c.coords.length>2){
+      // Auto-routed path (Dijkstra around buildings/barriers) — use it directly
+      // for all pipe types so the route is always respected.
       nw[c.id]=[...c.coords];
     } else {
       const pts=interpPts(s,e,sp);
