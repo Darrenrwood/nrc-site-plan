@@ -145,6 +145,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <span style="font-size:16px;color:#888">🔍</span>
     <input id="title-input" type="text" value="EX361671" placeholder="Land Registry title number" autocapitalize="characters" autocorrect="off" spellcheck="false"/>
     <button id="search-btn" onclick="doLoad()">→</button>
+  <span id="ver-badge" style="font-size:10px;color:#666;padding:2px 5px;background:#222;border-radius:4px;flex-shrink:0">v8</span>
   </div>
 
   <div id="hint-bar">
@@ -1601,8 +1602,8 @@ async function doLoad(){
     fetchBuildings(rings);          // background — no await
   }catch(e){
     const isNetwork=e.message?.includes('Failed to fetch')||e.message?.includes('NetworkError')||e.message?.includes('Load failed');
-    showErr(isNetwork?'Network error — check internet connection and try again.'
-      :`[${e.name||'?'}] Could not load boundary: ${e.message}`);
+    showErr(isNetwork?'v8: Network error — check connection.'
+      :`v8 [${e.name||'?'}]: ${e.message}`);
   }
   finally{setLoading(false);}
 }
