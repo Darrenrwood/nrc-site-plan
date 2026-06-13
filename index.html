@@ -1569,11 +1569,11 @@ async function doLoad(){
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
   try{
-    // OGC Filter XML in a GET request: no single quotes in the URL (encodeURIComponent leaves
-    // ' literal, causing Safari to reject), no CORS preflight (GET is simple), HMLR supports GET.
-    const filter=`<Filter xmlns="http://www.opengis.net/ogc"><PropertyIsEqualTo><PropertyName>TITLE_NO</PropertyName><Literal>${tn}</Literal></PropertyIsEqualTo></Filter>`;
-    const inspireUrl=`${INSPIRE}?service=WFS&version=1.1.0&request=GetFeature&typeName=inspire:BasicPropertyUnit&outputFormat=application/json&maxFeatures=1&FILTER=${filter}`;
-    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(inspireUrl)}`);
+    // CQL_FILTER with explicit ' encoding: encodeURIComponent intentionally leaves ' unencoded
+    // (it's in the "unreserved" set), so we manually replace ' with %27 after encoding.
+    // corsproxy.io decodes the url= param and forwards the CQL filter with ' to HMLR.
+    const cqlUrl=`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=1&CQL_FILTER=TITLE_NO='${tn}'`;
+    const r=await fetch(`https://corsproxy.io/?url=${encodeURIComponent(cqlUrl).replace(/'/g,'%27')}`);
     if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
     const txt=await r.text();
     if(txt.trim().startsWith('<')){
