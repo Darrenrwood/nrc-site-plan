@@ -1569,12 +1569,10 @@ async function doLoad(){
   rings=null;
   document.getElementById('title-badge').classList.remove('vis');
   try{
-    // URLSearchParams.set() encodes ' as %27 by design (unlike encodeURIComponent which
-    // leaves ' unencoded), producing a fetch URL Safari accepts.
+    // Build as a plain string — do NOT use new URL() which triggers iOS 17 re-encoding
+    // (%27 → %2527). encodeURIComponent leaves ' unencoded per spec, so we replace manually.
     const cqlUrl=`${INSPIRE}?service=WFS&version=2.0.0&request=GetFeature&typeNames=inspire:BasicPropertyUnit&outputFormat=application/json&count=1&CQL_FILTER=TITLE_NO='${tn}'`;
-    const proxyUrl=new URL('https://corsproxy.io/');
-    proxyUrl.searchParams.set('url',cqlUrl);
-    const r=await fetch(proxyUrl.toString());
+    const r=await fetch('https://corsproxy.io/?url='+encodeURIComponent(cqlUrl).replace(/'/g,'%27'));
     if(!r.ok)throw new Error(`Land Registry returned HTTP ${r.status}`);
     const txt=await r.text();
     if(txt.trim().startsWith('<')){
