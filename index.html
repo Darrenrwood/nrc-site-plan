@@ -2902,30 +2902,51 @@ function _updateLocDot(lat,lng,accuracy){
 }
 
 async function _tryFetchPropertyAtPoint(lat,lng){
-  try{
-    // bbox in EPSG:4326 axis order (lat,lng) with a ~20 m radius
-    const eps=0.00018;
-    const p=new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
+  _showLocToast('🔍 Searching for property…','#1d4ed8');
+  // Try CQL CONTAINS first (most precise — polygon contains GPS point)
+  // Fall back to a small bbox query if the first attempt returns nothing
+  const attempts=[
+    ()=>new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
       typeNames:'inspire:BasicPropertyUnit',
-      bbox:`${lat-eps},${lng-eps},${lat+eps},${lng+eps},urn:ogc:def:crs:EPSG::4326`,
-      outputFormat:'application/json',count:'5'});
-    const r=await fetch(`${INSPIRE}?${p}`,{mode:'cors'});
-    if(!r.ok)return;
-    const gj=await r.json();
-    if(!gj.features?.length)return;
-    // Pick the feature with the smallest bounding box — most likely the one you're standing in
-    const best=gj.features.reduce((a,b)=>{
-      const area=f=>{const c=f.geometry?.coordinates?.[0]??[];if(!c.length)return Infinity;
-        let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
-        c.forEach(([x,y])=>{minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);});
-        return(maxX-minX)*(maxY-minY);};
-      return area(a)<area(b)?a:b;
-    });
-    const tn=best.properties?.TITLE_NO;
-    if(!tn)return;
-    document.getElementById('title-input').value=tn;
-    doLoad();
-  }catch(_){}
+      CQL_FILTER:`CONTAINS(GEOM,SRID=4326;POINT(${lng} ${lat}))`,
+      outputFormat:'application/json',count:'5'}),
+    ()=>{const e=0.00018;return new URLSearchParams({service:'WFS',version:'2.0.0',request:'GetFeature',
+      typeNames:'inspire:BasicPropertyUnit',
+      bbox:`${lng-e},${lat-e},${lng+e},${lat+e},CRS:84`,
+      outputFormat:'application/json',count:'5'});},
+  ];
+  for(const mkParams of attempts){
+    try{
+      const r=await fetch(`${INSPIRE}?${mkParams()}`,{mode:'cors'});
+      if(!r.ok)continue;
+      const gj=await r.json();
+      if(!gj.features?.length)continue;
+      // Smallest bounding box = most likely the plot you're standing on
+      const best=gj.features.reduce((a,b)=>{
+        const area=f=>{const c=f.geometry?.coordinates?.[0]??[];if(!c.length)return Infinity;
+          let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+          c.flat(1).forEach(([x,y])=>{x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);});
+          return(x1-x0)*(y1-y0);};
+        return area(a)<area(b)?a:b;
+      });
+      const tn=best.properties?.TITLE_NO;
+      if(!tn)continue;
+      _showLocToast(`🏠 Found ${tn} — loading…`,'#15803d');
+      document.getElementById('title-input').value=tn;
+      doLoad();
+      return;
+    }catch(_){continue;}
+  }
+  _showLocToast('ℹ No registered property found here','#3A3A3C');
+}
+
+function _showLocToast(msg,bg){
+  let t=document.getElementById('loc-toast');
+  if(!t){t=document.createElement('div');t.id='loc-toast';
+    t.style.cssText='position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:1200;color:#fff;font-size:12px;padding:7px 14px;border-radius:20px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.5)';
+    document.getElementById('map-wrap').appendChild(t);}
+  t.style.background=bg;t.textContent=msg;
+  clearTimeout(t._t);t._t=setTimeout(()=>{if(t.parentNode)t.remove();},4000);
 }
 
 function initLocation(){
@@ -2937,6 +2958,7 @@ function initLocation(){
       if(!_locInitDone){
         _locInitDone=true;
         map.setView([lat,lng],18);
+        _showLocToast(`📍 Located (±${Math.round(accuracy)}m)`,'#1d4ed8');
         if(!rings) _tryFetchPropertyAtPoint(lat,lng);
       }
     },
