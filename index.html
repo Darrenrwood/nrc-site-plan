@@ -14,10 +14,16 @@
 html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1c1c1e;color:#fff;overflow:hidden}
 #app{display:flex;flex-direction:column;height:100vh;height:100dvh;padding-top:env(safe-area-inset-top,0px)}
 
-#top-bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#1c1c1e;border-bottom:1px solid #333;flex-shrink:0}
+#top-bar{display:flex;align-items:center;gap:0;padding:10px 14px;background:#1c1c1e;border-bottom:1px solid #333;flex-shrink:0}
 #top-bar input{flex:1;background:transparent;border:none;outline:none;color:#fff;font-size:15px;padding:4px 0;letter-spacing:.05em}
 #top-bar input::placeholder{color:#666;letter-spacing:0}
+.tb-left{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
+.tb-center{display:flex;align-items:center;gap:4px;padding:0 12px;flex-shrink:0}
+.tb-right{flex:1}
 #search-btn{background:none;border:none;color:#0a84ff;font-size:22px;cursor:pointer;padding:2px 4px;line-height:1}
+.undo-btn{background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:2px 6px;line-height:1;opacity:.85;transition:opacity .15s}
+.undo-btn:active{opacity:1}
+.undo-btn:disabled{opacity:.25;cursor:default}
 
 #hint-bar{display:none;align-items:center;gap:8px;padding:8px 14px;font-size:13px;font-weight:500;flex-shrink:0}
 #hint-bar.vis{display:flex}
@@ -157,9 +163,16 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 <body>
 <div id="app">
   <div id="top-bar">
-    <span style="font-size:16px;color:#888">🔍</span>
-    <input id="title-input" type="text" value="EX361671" placeholder="Land Registry title number" autocapitalize="characters" autocorrect="off" spellcheck="false"/>
-    <button id="search-btn" onclick="doLoad()">→</button>
+    <div class="tb-left">
+      <span style="font-size:16px;color:#888">🔍</span>
+      <input id="title-input" type="text" value="EX361671" placeholder="Land Registry title number" autocapitalize="characters" autocorrect="off" spellcheck="false"/>
+      <button id="search-btn" onclick="doLoad()">→</button>
+    </div>
+    <div class="tb-center">
+      <button id="undo-btn" class="undo-btn" onclick="undoAction()" disabled title="Undo">↺</button>
+      <button id="redo-btn" class="undo-btn" onclick="redoAction()" disabled title="Redo">↻</button>
+    </div>
+    <div class="tb-right"></div>
   </div>
 
   <div id="hint-bar">
@@ -416,7 +429,30 @@ const API_BASE = 'https://nrc-staging-api.azurewebsites.net/api';
 // ── Persistence ──────────────────────────────────────────────────────────────
 const SAVE_KEY = 'nrc-siteplan-v1';
 
+function _undoStateJson(){
+  return JSON.stringify({
+    rings,placedMarkers,connectionWaypoints,
+    bendViolations:Object.fromEntries(Object.entries(bendViolations).map(([k,v])=>[k,[...v]])),
+    selectedPlantPE,markerCounter,promotedLastIcId,stpTargetIcId,
+    buildingPolygons,manualBuildingPolygons,barrierLines
+  });
+}
+function _updateUndoRedoBtns(){
+  const u=document.getElementById('undo-btn'),r=document.getElementById('redo-btn');
+  if(u)u.disabled=_undoStack.length===0;
+  if(r)r.disabled=_redoStack.length===0;
+}
 function autoSave() {
+  if(!_undoSuppressed){
+    const newJson=_undoStateJson();
+    if(_currentUndoJson!==null&&newJson!==_currentUndoJson){
+      _undoStack.push(_currentUndoJson);
+      if(_undoStack.length>80)_undoStack.shift();
+      _redoStack=[];
+      _updateUndoRedoBtns();
+    }
+    _currentUndoJson=newJson;
+  }
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       titleNo: document.getElementById('title-input').value.trim().toUpperCase(),
@@ -437,6 +473,60 @@ function autoSave() {
       barrierLines,
     }));
   } catch(_) {}
+}
+
+function _applyUndoState(json){
+  const s=JSON.parse(json);
+  // Remove all live marker layers
+  Object.keys(markerLayers).forEach(id=>{map.removeLayer(markerLayers[id]);delete markerLayers[id];});
+  // Restore globals
+  rings=s.rings||null;
+  placedMarkers=s.placedMarkers||[];
+  connectionWaypoints=s.connectionWaypoints||{};
+  bendViolations=s.bendViolations?Object.fromEntries(Object.entries(s.bendViolations).map(([k,v])=>[k,new Set(v)])):{};
+  selectedPlantPE=s.selectedPlantPE??null;
+  markerCounter=s.markerCounter||0;
+  promotedLastIcId=s.promotedLastIcId||null;
+  stpTargetIcId=s.stpTargetIcId||null;
+  buildingPolygons=s.buildingPolygons||[];
+  manualBuildingPolygons=s.manualBuildingPolygons||[];
+  barrierLines=s.barrierLines||[];
+  // Rebuild boundary layer
+  if(boundaryLayer){map.removeLayer(boundaryLayer);boundaryLayer=null;}
+  if(rings){
+    const poly=L.polygon(rings.map(r=>r.map(c=>[c.lat,c.lng])),
+      {color:'#E11D48',weight:2.5,fillColor:'#E11D48',fillOpacity:0.08}).addTo(map);
+    boundaryLayer=poly;
+  }
+  // Re-render all layers
+  for(const m of placedMarkers)renderMarker(m);
+  renderBuildings();
+  renderBarriers();
+  renderConnections();
+  recheckViolations();
+  updateClearBtn();
+  renderPalette();
+  // Persist without pushing a new undo entry
+  _undoSuppressed=true;
+  autoSave();
+  _undoSuppressed=false;
+  _currentUndoJson=json;
+}
+function undoAction(){
+  if(!_undoStack.length)return;
+  _redoStack.push(_currentUndoJson);
+  if(_redoStack.length>80)_redoStack.shift();
+  const prev=_undoStack.pop();
+  _applyUndoState(prev);
+  _updateUndoRedoBtns();
+}
+function redoAction(){
+  if(!_redoStack.length)return;
+  _undoStack.push(_currentUndoJson);
+  if(_undoStack.length>80)_undoStack.shift();
+  const next=_redoStack.pop();
+  _applyUndoState(next);
+  _updateUndoRedoBtns();
 }
 
 function autoLoad() {
@@ -523,6 +613,10 @@ let icOriginConn  = {};        // {[icId]: connId} — persists after manual dra
 let stpTargetIcId = null;      // IC the STP foul inlet connects to (null = default last IC)
 let pendingStpIcCb = null;     // callback waiting for stp-ic-modal answer
 let _cachedConns = null;       // last full computeConns result — reused on zoom-only renders
+let _undoStack = [];           // array of JSON strings — past states
+let _redoStack = [];           // array of JSON strings — future states (after undo)
+let _currentUndoJson = null;   // JSON of the state as of the last autoSave call
+let _undoSuppressed = false;   // prevents re-entry during undo/redo restore
 
 // ── Leaflet layers ────────────────────────────────────────────────────────────
 let map, boundaryLayer = null, buildingLayerGroup = null;
@@ -3794,6 +3888,7 @@ function initLocation(){
 renderPalette();
 renderPsRows();
 localStorage.removeItem(SAVE_KEY); // always start fresh on page open
+_currentUndoJson=_undoStateJson(); // seed undo baseline so first action is undoable
 map.on('zoomend', ()=>{ renderConnections(true); }); // true = zoom-only, preserve user waypoints
 map.on('click', hideRotHandle);
 initLocation();
