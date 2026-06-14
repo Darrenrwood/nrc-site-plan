@@ -2957,8 +2957,10 @@ function _buildPlanSVG(){
     let r;
     if(sym2?.dims?.type==='rectangle'){
       const{width,depth}=effDims(m,sym2);
-      const rw=Math.max(width*sc/2,m.symbolId==='sewage_treatment_plant'?22:m.symbolId==='drainage_field'?30:14);
-      const rh=Math.max(depth*sc/2,m.symbolId==='sewage_treatment_plant'?14:m.symbolId==='drainage_field'?20:10);
+      const isStp=m.symbolId==='sewage_treatment_plant'||m.symbolId==='existing_septic_tank';
+      const isDrain=m.symbolId==='drainage_field';
+      const rw=Math.max(width*sc/2,isStp?22:isDrain?30:14);
+      const rh=Math.max(depth*sc/2,isStp?14:isDrain?20:10);
       const rot2=(m.rotation||0)*Math.PI/180;
       const lx=ddx*Math.cos(rot2)+ddy*Math.sin(rot2);
       const ly=-ddx*Math.sin(rot2)+ddy*Math.cos(rot2);
@@ -2971,16 +2973,19 @@ function _buildPlanSVG(){
     r=Math.min(r,len*0.85);
     return{x:cx+ddx*r/len,y:cy+ddy*r/len};
   };
-  const EPS_LL=0.000008;
   let labelsSvg='';
   for(const c of connsForPlan){
     if(c.routingFailed)continue;
     const path=connectionWaypoints[c.id]??c.coords;
     if(!path||path.length<2)continue;
-    // Build pixel path, trim endpoints to marker icon boundaries
+    // Build pixel path, trim endpoints to marker icon boundaries.
+    // Use _distM for matching because path endpoints are at real-world face offsets
+    // (icEdgePt ~0.15 m, stpFaces ~1.14 m, drainFace up to several metres from centre),
+    // not at the exact marker lat/lng.
     const pxPath=path.map(p=>px(p.lat,p.lng));
-    const startM=placedMarkers.find(m=>Math.abs(m.lat-path[0].lat)<EPS_LL&&Math.abs(m.lng-path[0].lng)<EPS_LL);
-    const endM=placedMarkers.find(m=>Math.abs(m.lat-path[path.length-1].lat)<EPS_LL&&Math.abs(m.lng-path[path.length-1].lng)<EPS_LL);
+    const _nearestM=(pt)=>placedMarkers.reduce((b,m)=>{const d=_distM(m,pt);return d<12&&(!b||d<b.d)?{m,d}:b;},null)?.m;
+    const startM=_nearestM(path[0]);
+    const endM=_nearestM(path[path.length-1]);
     if(startM&&pxPath.length>=2){const e=_planEdge(startM,pxPath[1].x,pxPath[1].y);if(e)pxPath[0]=e;}
     if(endM&&pxPath.length>=2){const e=_planEdge(endM,pxPath[pxPath.length-2].x,pxPath[pxPath.length-2].y);if(e)pxPath[pxPath.length-1]=e;}
     const pts=pxPath.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
