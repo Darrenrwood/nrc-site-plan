@@ -2756,9 +2756,8 @@ function _buildPlanSVG(){
     const path=connectionWaypoints[c.id]??c.coords;
     if(!path||path.length<2)continue;
     const pts=path.map(p=>{const{x,y}=px(p.lat,p.lng);return`${x},${y}`;}).join(' ');
-    const arrId=c.type==='cable'?null:c.type==='pressure'?'aP':'aG';
-    s+=`<polyline points="${pts}" fill="none" stroke="${c.color}" stroke-width="${(c.width||2)+0.5}" ${c.dashed?'stroke-dasharray="10,6"':''} ${arrId?`marker-end="url(#${arrId})" `:''}stroke-linecap="round" stroke-linejoin="round" clip-path="url(#dc)"/>`;
-    // Pipe length label at true arc-length midpoint, offset perpendicular to pipe direction
+    s+=`<polyline points="${pts}" fill="none" stroke="${c.color}" stroke-width="${(c.width||2)+0.5}" ${c.dashed?'stroke-dasharray="10,6"':''} stroke-linecap="round" stroke-linejoin="round" clip-path="url(#dc)"/>`;
+    // Compute segment arc lengths — reused for label midpoint and direction arrows
     const segs=[];
     let totalLen=0;
     for(let i=1;i<path.length;i++){const a=path[i-1],b=path[i];const sl=Math.hypot((b.lat-a.lat)*111319,(b.lng-a.lng)*111319*cosLat);segs.push({a,b,sl});totalLen+=sl;}
@@ -2773,6 +2772,27 @@ function _buildPlanSVG(){
     const nx=-dy/ld*14,ny=dx/ld*14;
     s+=`<rect x="${(mx+nx-15).toFixed(1)}" y="${(my+ny-7).toFixed(1)}" width="30" height="12" rx="3" fill="white" fill-opacity="0.9" clip-path="url(#dc)"/>`;
     s+=`<text x="${(mx+nx).toFixed(1)}" y="${(my+ny+3).toFixed(1)}" text-anchor="middle" font-size="8" fill="${c.color}" font-weight="700" clip-path="url(#dc)">${lenStr}</text>`;
+    // Direction arrows: gravity+pressure only; 1 at midpoint if ≤50m, else one every 25m
+    if(c.type!=='cable'){
+      const arrowDs=totalLen<=50?[half]:[];
+      if(totalLen>50){for(let d=25;d<totalLen;d+=25)arrowDs.push(d);}
+      for(const ad of arrowDs){
+        let ac=0;
+        for(const seg of segs){
+          if(ac+seg.sl>=ad){
+            const t=(ad-ac)/seg.sl;
+            const apt={lat:seg.a.lat+t*(seg.b.lat-seg.a.lat),lng:seg.a.lng+t*(seg.b.lng-seg.a.lng)};
+            const{x:ax,y:ay}=px(apt.lat,apt.lng);
+            const{x:sx1,y:sy1}=px(seg.a.lat,seg.a.lng);
+            const{x:sx2,y:sy2}=px(seg.b.lat,seg.b.lng);
+            const ang=Math.atan2(sy2-sy1,sx2-sx1)*180/Math.PI;
+            s+=`<path d="M-6,-4 L5,0 L-6,4 Z" fill="${c.color}" stroke="none" transform="translate(${ax.toFixed(1)},${ay.toFixed(1)}) rotate(${ang.toFixed(1)})" clip-path="url(#dc)"/>`;
+            break;
+          }
+          ac+=seg.sl;
+        }
+      }
+    }
   }
 
   // Markers
