@@ -53,6 +53,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes vio-pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.8)}50%{box-shadow:0 0 0 7px rgba(220,38,38,0)}}
 @keyframes loc-pulse{0%{transform:scale(1);opacity:.7}70%{transform:scale(3);opacity:0}100%{transform:scale(3);opacity:0}}
+@keyframes barrier-snap-pulse{0%,100%{fill-opacity:.9;stroke-opacity:1}50%{fill-opacity:.3;stroke-opacity:.4}}
+.barrier-snap-pulse{animation:barrier-snap-pulse 0.55s ease-in-out infinite;}
 .loc-dot{position:relative;width:18px;height:18px}
 .loc-dot-inner{position:absolute;inset:0;background:#2563eb;border-radius:50%;border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,.4)}
 .loc-dot-pulse{position:absolute;inset:0;background:rgba(37,99,235,.45);border-radius:50%;animation:loc-pulse 2s ease-out infinite}
@@ -499,6 +501,7 @@ let drawBuildingPoints = [];
 let drawBuildingTempLayer = null;
 let barrierLines = []; // [{lat,lng}] polylines — user-drawn routing barriers
 let barrierLayer = null;
+let _barrierSnapMarker = null;
 let drawingBarrier = false;
 let drawBarrierPoints = [];
 let drawBarrierTempLayer = null;
@@ -531,6 +534,26 @@ let suggestCircles = [];
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 // Compass bearing in degrees (0° = north, CW) from point `a` to point `b`.
+// Returns the snapped lat/lng on the nearest boundary/building edge within maxD metres,
+// or null if none is within that distance.
+function _snapToEdge(lat,lng,maxD){
+  const cl=Math.cos(lat*Math.PI/180);
+  let bestD=maxD+1,bestPt=null;
+  const _check=(poly)=>{
+    for(let i=0;i<poly.length;i++){
+      const a=poly[i],b=poly[(i+1)%poly.length];
+      const px=(lng-a.lng)*111319*cl,py=(lat-a.lat)*111319;
+      const bx=(b.lng-a.lng)*111319*cl,by=(b.lat-a.lat)*111319;
+      const len2=bx*bx+by*by;if(!len2)continue;
+      const t=Math.max(0,Math.min(1,(px*bx+py*by)/len2));
+      const d=Math.hypot(px-t*bx,py-t*by);
+      if(d<bestD){bestD=d;bestPt={lat:a.lat+(b.lat-a.lat)*t,lng:a.lng+(b.lng-a.lng)*t};}
+    }
+  };
+  if(rings&&rings[0])_check(rings[0]);
+  buildingPolygons.forEach(_check);
+  return bestPt;
+}
 // Returns the bearing (degrees) of the nearest boundary/building edge within maxD metres,
 // or null if none is found within that distance.
 function _nearestEdgeBearing(lat,lng,maxD){
@@ -1754,22 +1777,49 @@ function confirmDrawBuilding(){
 function toggleDrawBarrier(){
   if(drawingBarrier)cancelDrawBarrier();else startDrawBarrier();
 }
+const BARRIER_SNAP_M=5;
+function _clearBarrierSnap(){
+  if(_barrierSnapMarker){map.removeLayer(_barrierSnapMarker);_barrierSnapMarker=null;}
+}
+function _updateBarrierSnapMarker(lat,lng){
+  _clearBarrierSnap();
+  const sp=_snapToEdge(lat,lng,BARRIER_SNAP_M);
+  if(!sp)return;
+  _barrierSnapMarker=L.circleMarker([sp.lat,sp.lng],{
+    radius:9,color:'#f59e0b',fillColor:'#fbbf24',fillOpacity:.9,weight:3,
+    interactive:false,pane:'connPane',className:'barrier-snap-pulse'
+  }).addTo(map);
+}
+function _onBarrierMouseMove(e){_updateBarrierSnapMarker(e.latlng.lat,e.latlng.lng);}
+function _onBarrierTouchMove(e){
+  if(!e.touches||!e.touches[0])return;
+  const r=map.getContainer().getBoundingClientRect();
+  const ll=map.containerPointToLatLng(L.point(e.touches[0].clientX-r.left,e.touches[0].clientY-r.top));
+  _updateBarrierSnapMarker(ll.lat,ll.lng);
+}
 function startDrawBarrier(){
   drawingBarrier=true;drawBarrierPoints=[];
   if(drawBarrierTempLayer){map.removeLayer(drawBarrierTempLayer);}
   drawBarrierTempLayer=L.layerGroup().addTo(map);
+  map.on('mousemove',_onBarrierMouseMove);
+  map.getContainer().addEventListener('touchmove',_onBarrierTouchMove,{passive:true});
   document.getElementById('barrier-btn').textContent='✕ Cancel';
   document.getElementById('barrier-btn').classList.add('red');
   document.getElementById('barrier-done-btn').style.display='none';
 }
 function cancelDrawBarrier(){
   drawingBarrier=false;drawBarrierPoints=[];
+  map.off('mousemove',_onBarrierMouseMove);
+  map.getContainer().removeEventListener('touchmove',_onBarrierTouchMove);
+  _clearBarrierSnap();
   if(drawBarrierTempLayer){map.removeLayer(drawBarrierTempLayer);drawBarrierTempLayer=null;}
   document.getElementById('barrier-btn').textContent='⛔ Barrier';
   document.getElementById('barrier-btn').classList.remove('red');
   document.getElementById('barrier-done-btn').style.display='none';
 }
 function addDrawBarrierPoint(lat,lng){
+  const sp=_snapToEdge(lat,lng,BARRIER_SNAP_M);
+  if(sp){lat=sp.lat;lng=sp.lng;}
   drawBarrierPoints.push({lat,lng});
   _updateDrawBarrierPreview();
 }
@@ -2797,7 +2847,7 @@ function _buildPlanSVG(){
             const{x:sx1,y:sy1}=px(seg.a.lat,seg.a.lng);
             const{x:sx2,y:sy2}=px(seg.b.lat,seg.b.lng);
             const ang=Math.atan2(sy2-sy1,sx2-sx1)*180/Math.PI;
-            s+=`<path d="M-9,-5 L8,0 L-9,5 Z" fill="${c.color}" stroke="white" stroke-width="1.5" stroke-linejoin="round" transform="translate(${ax.toFixed(1)},${ay.toFixed(1)}) rotate(${ang.toFixed(1)})" clip-path="url(#dc)"/>`;
+            s+=`<path d="M-14,-7 L13,0 L-14,7 Z" fill="${c.color}" stroke="white" stroke-width="2" stroke-linejoin="round" transform="translate(${ax.toFixed(1)},${ay.toFixed(1)}) rotate(${ang.toFixed(1)})"/>`;
             break;
           }
           ac+=seg.sl;
@@ -2819,18 +2869,23 @@ function _buildPlanSVG(){
     }
     if(m.symbolId==='sewage_treatment_plant'||m.symbolId==='existing_septic_tank'){
       const{width,depth}=effDims(m,sym);
-      const rw=(width*sc/2).toFixed(1),rh=(depth*sc/2).toFixed(1);
+      // Enforce a minimum on-plan size so the symbol is always legible
+      const rw=Math.max(width*sc/2,22),rh=Math.max(depth*sc/2,14);
       const rot=m.rotation||0;
       const lbl=m.symbolId==='sewage_treatment_plant'?'STP':'ST';
-      s+=`<g transform="rotate(${rot},${x},${y})"><rect x="${(x-rw).toFixed(1)}" y="${(y-rh).toFixed(1)}" width="${(rw*2).toFixed(1)}" height="${(rh*2).toFixed(1)}" fill="${sym.color}aa" stroke="${sym.color}" stroke-width="2.5"/><text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="11" fill="white" font-weight="700">${lbl}</text></g>`;
-      if(m.symbolId==='existing_septic_tank')s+=`<text x="${x}" y="${(+y+parseFloat(rh)+14).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1f2937" clip-path="url(#dc)">${sym.shortLabel}</text>`;
+      // Rectangle in a rotated group; text stays outside so it's never upside-down
+      s+=`<g transform="rotate(${rot},${x},${y})"><rect x="${(x-rw).toFixed(1)}" y="${(y-rh).toFixed(1)}" width="${(rw*2).toFixed(1)}" height="${(rh*2).toFixed(1)}" fill="${sym.color}cc" stroke="${sym.color}" stroke-width="2"/></g>`;
+      s+=`<text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="10" fill="white" font-weight="700" clip-path="url(#dc)">${lbl}</text>`;
+      if(m.symbolId==='existing_septic_tank')s+=`<text x="${x}" y="${(+y+rh+14).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1f2937" clip-path="url(#dc)">${sym.shortLabel}</text>`;
       continue;
     }
     if(m.symbolId==='drainage_field'){
       const{width,depth}=effDims(m,sym);
-      const rw=(width*sc/2).toFixed(1),rh=(depth*sc/2).toFixed(1);
+      const rw=Math.max(width*sc/2,30),rh=Math.max(depth*sc/2,20);
       const rot=m.rotation||0;
-      s+=`<g transform="rotate(${rot},${x},${y})"><rect x="${(x-rw).toFixed(1)}" y="${(y-rh).toFixed(1)}" width="${(rw*2).toFixed(1)}" height="${(rh*2).toFixed(1)}" fill="${sym.color}2a" stroke="${sym.color}" stroke-width="2" stroke-dasharray="10,5"/><text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="10" fill="${sym.color}" font-weight="700">DRAIN FIELD</text></g>`;
+      // Rotated boundary only; label outside so it is always horizontal
+      s+=`<g transform="rotate(${rot},${x},${y})"><rect x="${(x-rw).toFixed(1)}" y="${(y-rh).toFixed(1)}" width="${(rw*2).toFixed(1)}" height="${(rh*2).toFixed(1)}" fill="${sym.color}2a" stroke="${sym.color}" stroke-width="2" stroke-dasharray="10,5"/></g>`;
+      s+=`<text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="9" fill="${sym.color}" font-weight="700" stroke="white" stroke-width="2.5" paint-order="stroke" clip-path="url(#dc)">DRAIN FIELD</text>`;
       continue;
     }
     // Electrical point — square
