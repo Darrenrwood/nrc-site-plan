@@ -1588,7 +1588,7 @@ map.on('click',e=>{
     _showBuildingToast(-1);
     return;
   }
-  if(_outsideBoundary(lat,lng)){_showBuildingToast(-2);return;}
+  if(sym.id!=='well_borehole'&&_outsideBoundary(lat,lng)){_showBuildingToast(-2);return;}
 
   if(sym.id==='sewage_treatment_plant'){
     openStpPeModal(lat,lng);
@@ -1850,7 +1850,7 @@ function parseWKT(wkt){
 function addMarker(m){
   // Hard blocks — no code path may place a marker inside a building or outside the boundary.
   if(buildingPolygons.length&&_markerOverlapsBuilding(m)){_showBuildingToast(-1);return;}
-  if(_outsideBoundary(m.lat,m.lng,m)){_showBuildingToast(-2);return;}
+  if(m.symbolId!=='well_borehole'&&_outsideBoundary(m.lat,m.lng,m)){_showBuildingToast(-2);return;}
   m.id=String(++markerCounter);
   // Auto-orient on placement so the correct face points toward its reference marker.
   // Rotation is in CSS degrees (CW from up = north).
@@ -1950,7 +1950,7 @@ function renderMarker(m){
   mk.on('dragend',e=>{
     const {lat,lng}=e.target.getLatLng();
     m.lat=lat;m.lng=lng;
-    if(_markerOverlapsBuilding(m)||_outsideBoundary(m.lat,m.lng,m)){
+    if(_markerOverlapsBuilding(m)||(m.symbolId!=='well_borehole'&&_outsideBoundary(m.lat,m.lng,m))){
       m.lat=m._preDragLat;m.lng=m._preDragLng;
       e.target.setLatLng([m.lat,m.lng]);
       renderMarker(m);renderConnections();
@@ -2552,7 +2552,7 @@ async function placeAtGps(){
   const _needsSizeModal=sym.id==='sewage_treatment_plant'||sym.id==='drainage_field'||sym.dims?.userDefined;
   const _overlaps=_needsSizeModal?_inAnyBuilding(lat,lng):_markerOverlapsBuilding({lat,lng,symbolId:sym.id,rotation:0});
   if(_overlaps){btn.textContent='📍 Place here';btn.disabled=false;_showBuildingToast(-1);return;}
-  if(_outsideBoundary(lat,lng)){btn.textContent='📍 Place here';btn.disabled=false;_showBuildingToast(-2);return;}
+  if(sym.id!=='well_borehole'&&_outsideBoundary(lat,lng)){btn.textContent='📍 Place here';btn.disabled=false;_showBuildingToast(-2);return;}
 
   let w3w=null;
   try{
@@ -2805,12 +2805,20 @@ function _buildPlanSVG(){
       s+=`<g transform="rotate(${rot},${x},${y})"><rect x="${(x-rw).toFixed(1)}" y="${(y-rh).toFixed(1)}" width="${(rw*2).toFixed(1)}" height="${(rh*2).toFixed(1)}" fill="${sym.color}2a" stroke="${sym.color}" stroke-width="2" stroke-dasharray="10,5"/><text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="10" fill="${sym.color}" font-weight="700">DRAIN FIELD</text></g>`;
       continue;
     }
+    // Well / Borehole — three concentric circles with W label
+    if(m.symbolId==='well_borehole'){
+      s+=`<circle cx="${x}" cy="${y}" r="10" fill="none" stroke="${sym.color}" stroke-width="1.5" clip-path="url(#dc)"/>`;
+      s+=`<circle cx="${x}" cy="${y}" r="6" fill="none" stroke="${sym.color}" stroke-width="1" clip-path="url(#dc)"/>`;
+      s+=`<circle cx="${x}" cy="${y}" r="2.5" fill="${sym.color}" clip-path="url(#dc)"/>`;
+      s+=`<text x="${x}" y="${(+y+22).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1f2937" clip-path="url(#dc)">${sym.shortLabel}</text>`;
+      continue;
+    }
     // Circle markers
     const r=m.symbolId==='pumping_station'?12:m.symbolId==='new_inspection_chamber_small'?8:10;
     const icN=icNums.get(m.id);
     const lbl=(m.symbolId==='last_inspection_chamber'||m.symbolId==='existing_inspection_chamber')&&icN?`IC${icN}`
       :(m.symbolId==='new_inspection_chamber_large'||m.symbolId==='new_inspection_chamber_small')?'IC'
-      :{kiosk:'K',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[m.symbolId]||'?';
+      :{kiosk:'K',pumping_station:'PS',discharge_point:'DP',electrical_point:'E',well_borehole:'W'}[m.symbolId]||'?';
     s+=`<circle cx="${x}" cy="${y}" r="${r}" fill="${sym.color}" stroke="white" stroke-width="1.5" clip-path="url(#dc)"/>`;
     s+=`<text x="${x}" y="${(+y+3).toFixed(1)}" text-anchor="middle" font-size="${r<10?7:8}" fill="white" font-weight="700" clip-path="url(#dc)">${lbl}</text>`;
     s+=`<text x="${x}" y="${(+y+r+12).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1f2937" clip-path="url(#dc)">${sym.shortLabel}</text>`;
