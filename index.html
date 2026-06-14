@@ -430,28 +430,29 @@ const API_BASE = 'https://nrc-staging-api.azurewebsites.net/api';
 const SAVE_KEY = 'nrc-siteplan-v1';
 
 function _undoStateJson(){
-  return JSON.stringify({
-    rings,placedMarkers,connectionWaypoints,
-    bendViolations:Object.fromEntries(Object.entries(bendViolations).map(([k,v])=>[k,[...v]])),
-    selectedPlantPE,markerCounter,promotedLastIcId,stpTargetIcId,
-    buildingPolygons,manualBuildingPolygons,barrierLines
-  });
+  try{
+    return JSON.stringify({
+      rings,placedMarkers,connectionWaypoints,
+      bendViolations:Object.fromEntries(Object.entries(bendViolations).map(([k,v])=>[k,[...v]])),
+      selectedPlantPE,markerCounter,promotedLastIcId,stpTargetIcId,
+      buildingPolygons,manualBuildingPolygons,barrierLines
+    });
+  }catch(_){return null;}
 }
 function _updateUndoRedoBtns(){
   const u=document.getElementById('undo-btn'),r=document.getElementById('redo-btn');
-  if(u)u.disabled=_undoStack.length===0;
+  if(u)u.disabled=_undoStack.length<2;
   if(r)r.disabled=_redoStack.length===0;
 }
 function autoSave() {
   if(!_undoSuppressed){
     const newJson=_undoStateJson();
-    if(_currentUndoJson!==null&&newJson!==_currentUndoJson){
-      _undoStack.push(_currentUndoJson);
-      if(_undoStack.length>80)_undoStack.shift();
+    if(newJson&&(!_undoStack.length||_undoStack[_undoStack.length-1]!==newJson)){
+      _undoStack.push(newJson);
+      if(_undoStack.length>81)_undoStack.shift();
       _redoStack=[];
       _updateUndoRedoBtns();
     }
-    _currentUndoJson=newJson;
   }
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
@@ -506,25 +507,32 @@ function _applyUndoState(json){
   recheckViolations();
   updateClearBtn();
   renderPalette();
-  // Persist without pushing a new undo entry
-  _undoSuppressed=true;
-  autoSave();
-  _undoSuppressed=false;
-  _currentUndoJson=json;
+  // Persist to localStorage without pushing a new undo entry
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      titleNo: document.getElementById('title-input').value.trim().toUpperCase(),
+      badgeText: document.getElementById('title-badge-text').textContent,
+      badgeVis: document.getElementById('title-badge').classList.contains('vis'),
+      rings,placedMarkers,connectionWaypoints,
+      bendViolations: Object.fromEntries(Object.entries(bendViolations).map(([k,v])=>[k,[...v]])),
+      selectedPlantPE,markerCounter,promotedLastIcId,stpTargetIcId,
+      buildingPolygons,manualBuildingPolygons,barrierLines,
+    }));
+  } catch(_) {}
 }
 function undoAction(){
-  if(!_undoStack.length)return;
-  _redoStack.push(_currentUndoJson);
+  if(_undoStack.length<2)return;
+  _redoStack.push(_undoStack.pop()); // move current state to redo
   if(_redoStack.length>80)_redoStack.shift();
-  const prev=_undoStack.pop();
+  const prev=_undoStack[_undoStack.length-1];
   _applyUndoState(prev);
   _updateUndoRedoBtns();
 }
 function redoAction(){
   if(!_redoStack.length)return;
-  _undoStack.push(_currentUndoJson);
-  if(_undoStack.length>80)_undoStack.shift();
   const next=_redoStack.pop();
+  _undoStack.push(next);
+  if(_undoStack.length>81)_undoStack.shift();
   _applyUndoState(next);
   _updateUndoRedoBtns();
 }
@@ -613,9 +621,8 @@ let icOriginConn  = {};        // {[icId]: connId} — persists after manual dra
 let stpTargetIcId = null;      // IC the STP foul inlet connects to (null = default last IC)
 let pendingStpIcCb = null;     // callback waiting for stp-ic-modal answer
 let _cachedConns = null;       // last full computeConns result — reused on zoom-only renders
-let _undoStack = [];           // array of JSON strings — past states
+let _undoStack = [];           // array of JSON strings — index 0=oldest, last=current
 let _redoStack = [];           // array of JSON strings — future states (after undo)
-let _currentUndoJson = null;   // JSON of the state as of the last autoSave call
 let _undoSuppressed = false;   // prevents re-entry during undo/redo restore
 
 // ── Leaflet layers ────────────────────────────────────────────────────────────
@@ -3888,7 +3895,7 @@ function initLocation(){
 renderPalette();
 renderPsRows();
 localStorage.removeItem(SAVE_KEY); // always start fresh on page open
-_currentUndoJson=_undoStateJson(); // seed undo baseline so first action is undoable
+{ const seed=_undoStateJson(); if(seed)_undoStack.push(seed); } // seed baseline so first action is undoable
 map.on('zoomend', ()=>{ renderConnections(true); }); // true = zoom-only, preserve user waypoints
 map.on('click', hideRotHandle);
 initLocation();
