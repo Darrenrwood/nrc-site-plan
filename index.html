@@ -1827,9 +1827,50 @@ function _updateDrawBarrierPreview(){
   if(!drawBarrierTempLayer)return;
   drawBarrierTempLayer.clearLayers();
   const n=drawBarrierPoints.length;
-  if(n>=2)L.polyline(drawBarrierPoints.map(p=>[p.lat,p.lng]),{color:'#DC2626',weight:3,dashArray:'10 5',pane:'connPane'}).addTo(drawBarrierTempLayer);
+  // Stable polyline reference so drag handlers can update it without full rebuild
+  let plyLyr=null;
+  if(n>=2){
+    plyLyr=L.polyline(drawBarrierPoints.map(p=>[p.lat,p.lng]),{color:'#DC2626',weight:3,dashArray:'10 5',pane:'connPane'});
+    plyLyr.addTo(drawBarrierTempLayer);
+  }
   drawBarrierPoints.forEach((pt,i)=>{
-    L.circleMarker([pt.lat,pt.lng],{radius:i===0?7:5,color:'#DC2626',fillColor:i===0?'#DC2626':'#fff',fillOpacity:1,weight:2,interactive:false}).addTo(drawBarrierTempLayer);
+    const sz=i===0?16:12;
+    const icon=L.divIcon({
+      className:'',
+      html:`<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${i===0?'#DC2626':'#fff'};border:2.5px solid #DC2626;cursor:grab;box-shadow:0 1px 5px rgba(0,0,0,.45)"></div>`,
+      iconSize:[sz,sz],iconAnchor:[sz/2,sz/2]
+    });
+    const mk=L.marker([pt.lat,pt.lng],{icon,draggable:true,pane:'connPane'}).addTo(drawBarrierTempLayer);
+    // Live drag — Leaflet disables map pan automatically while dragging a draggable marker
+    mk.on('drag',function(e){
+      const ll=e.target.getLatLng();
+      drawBarrierPoints[i]={lat:ll.lat,lng:ll.lng};
+      if(plyLyr)plyLyr.setLatLngs(drawBarrierPoints.map(p=>[p.lat,p.lng]));
+      _updateBarrierSnapMarker(ll.lat,ll.lng);
+    });
+    // On release: auto-snap if within range
+    mk.on('dragend',function(e){
+      const ll=e.target.getLatLng();
+      const sp=_snapToEdge(ll.lat,ll.lng,BARRIER_SNAP_M);
+      if(sp){
+        drawBarrierPoints[i]={lat:sp.lat,lng:sp.lng};
+        mk.setLatLng([sp.lat,sp.lng]);
+        if(plyLyr)plyLyr.setLatLngs(drawBarrierPoints.map(p=>[p.lat,p.lng]));
+      }
+      _clearBarrierSnap();
+    });
+    // Tap existing vertex → snap it to nearest edge
+    mk.on('click',function(e){
+      L.DomEvent.stopPropagation(e);
+      const cur=drawBarrierPoints[i];
+      const sp=_snapToEdge(cur.lat,cur.lng,BARRIER_SNAP_M);
+      if(sp){
+        drawBarrierPoints[i]={lat:sp.lat,lng:sp.lng};
+        mk.setLatLng([sp.lat,sp.lng]);
+        if(plyLyr)plyLyr.setLatLngs(drawBarrierPoints.map(p=>[p.lat,p.lng]));
+        _clearBarrierSnap();
+      }
+    });
   });
   const btn=document.getElementById('barrier-done-btn');
   btn.textContent=`✓ Done (${n} pts)`;
