@@ -2811,13 +2811,46 @@ function _buildPlanSVG(){
     s+=`<text x="${(obx+onx).toFixed(1)}" y="${(oby+ony+3).toFixed(1)}" text-anchor="middle" font-size="8" fill="#DC2626" font-weight="700" letter-spacing="0.5" clip-path="url(#dc)">OBSTACLE</text>`;
   }
 
-  // Connections
+  // Connections — two passes: lines+arrows first, labels on top after
   const connsForPlan=_cachedConns||computeConns(placedMarkers);
+  // Helper: compute the SVG pixel edge-point on a marker's visual boundary
+  // toward pixel coordinate (toX,toY), so pipes stop at the icon edge not centre.
+  const _planEdge=(m,toX,toY)=>{
+    if(!m)return null;
+    const sym2=SYM[m.symbolId];
+    const{x:cx,y:cy}=px(m.lat,m.lng);
+    const ddx=toX-cx,ddy=toY-cy,len=Math.hypot(ddx,ddy);
+    if(len<0.5)return{x:cx,y:cy};
+    let r;
+    if(sym2?.dims?.type==='rectangle'){
+      const{width,depth}=effDims(m,sym2);
+      const rw=Math.max(width*sc/2,m.symbolId==='sewage_treatment_plant'?22:m.symbolId==='drainage_field'?30:14);
+      const rh=Math.max(depth*sc/2,m.symbolId==='sewage_treatment_plant'?14:m.symbolId==='drainage_field'?20:10);
+      const rot2=(m.rotation||0)*Math.PI/180;
+      const lx=ddx*Math.cos(rot2)+ddy*Math.sin(rot2);
+      const ly=-ddx*Math.sin(rot2)+ddy*Math.cos(rot2);
+      const tx=Math.abs(lx)>0.01?rw/Math.abs(lx):1e9;
+      const ty=Math.abs(ly)>0.01?rh/Math.abs(ly):1e9;
+      r=Math.min(tx,ty);
+    }else if(m.symbolId==='well_borehole'){r=10;
+    }else if(m.symbolId==='electrical_point'){r=10;
+    }else{r=m.symbolId==='pumping_station'?12:m.symbolId==='new_inspection_chamber_small'?8:10;}
+    r=Math.min(r,len*0.85);
+    return{x:cx+ddx*r/len,y:cy+ddy*r/len};
+  };
+  const EPS_LL=0.000008;
+  let labelsSvg='';
   for(const c of connsForPlan){
     if(c.routingFailed)continue;
     const path=connectionWaypoints[c.id]??c.coords;
     if(!path||path.length<2)continue;
-    const pts=path.map(p=>{const{x,y}=px(p.lat,p.lng);return`${x},${y}`;}).join(' ');
+    // Build pixel path, trim endpoints to marker icon boundaries
+    const pxPath=path.map(p=>px(p.lat,p.lng));
+    const startM=placedMarkers.find(m=>Math.abs(m.lat-path[0].lat)<EPS_LL&&Math.abs(m.lng-path[0].lng)<EPS_LL);
+    const endM=placedMarkers.find(m=>Math.abs(m.lat-path[path.length-1].lat)<EPS_LL&&Math.abs(m.lng-path[path.length-1].lng)<EPS_LL);
+    if(startM&&pxPath.length>=2){const e=_planEdge(startM,pxPath[1].x,pxPath[1].y);if(e)pxPath[0]=e;}
+    if(endM&&pxPath.length>=2){const e=_planEdge(endM,pxPath[pxPath.length-2].x,pxPath[pxPath.length-2].y);if(e)pxPath[pxPath.length-1]=e;}
+    const pts=pxPath.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
     s+=`<polyline points="${pts}" fill="none" stroke="${c.color}" stroke-width="${(c.width||2)+0.5}" ${c.dashed?'stroke-dasharray="10,6"':''} stroke-linecap="round" stroke-linejoin="round" clip-path="url(#dc)"/>`;
     // Compute segment arc lengths — reused for label midpoint and direction arrows
     const segs=[];
@@ -2832,7 +2865,8 @@ function _buildPlanSVG(){
     const{x:mx2,y:my2}=px(mp2.lat,mp2.lng);
     const dx=mx-mx2,dy=my-my2,ld=Math.hypot(dx,dy)||1;
     const nx=-dy/ld*20,ny=dx/ld*20;
-    s+=`<text x="${(mx+nx).toFixed(1)}" y="${(my+ny+3).toFixed(1)}" text-anchor="middle" font-size="9" fill="${c.color}" stroke="white" stroke-width="3" paint-order="stroke" font-weight="700" clip-path="url(#dc)">${lenStr}</text>`;
+    // Accumulate label SVG for second pass (drawn after all pipe lines)
+    labelsSvg+=`<text x="${(mx+nx).toFixed(1)}" y="${(my+ny+3).toFixed(1)}" text-anchor="middle" font-size="9" fill="${c.color}" stroke="white" stroke-width="3" paint-order="stroke" font-weight="700" clip-path="url(#dc)">${lenStr}</text>`;
     // Direction arrows: gravity+pressure only; 1 at midpoint if ≤50m, else one every 25m
     if(c.type!=='cable'){
       const arrowDs=totalLen<=50?[half]:[];
@@ -2855,6 +2889,8 @@ function _buildPlanSVG(){
       }
     }
   }
+  // Second pass: emit all labels on top of every pipe line and arrow
+  s+=labelsSvg;
 
   // Markers
   const icNums=new Map(icNumbering().map(({marker,number})=>[marker.id,number]));
