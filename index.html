@@ -135,6 +135,16 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 .rot-grip:active{cursor:grabbing;background:#EFF6FF}
 .rot-del{position:absolute;width:22px;height:22px;background:#DC2626;border-radius:50%;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4);z-index:2000;transform:translate(-50%,-50%);pointer-events:auto;line-height:1}
 
+/* Map legend overlay */
+#map-legend{position:absolute;bottom:12px;left:10px;z-index:700;background:rgba(24,24,26,.93);border:1px solid #3a3a3c;border-radius:10px;padding:8px 10px;min-width:170px;max-width:220px;pointer-events:none;display:none}
+.mleg-title{font-size:9px;font-weight:700;letter-spacing:1.8px;color:#888;margin-bottom:6px;text-transform:uppercase}
+.mleg-section{font-size:9px;font-weight:600;color:#666;letter-spacing:1px;margin:6px 0 3px;text-transform:uppercase}
+.mleg-row{display:flex;align-items:center;gap:7px;margin-bottom:3px}
+.mleg-ico{flex-shrink:0;width:20px;height:20px;display:flex;align-items:center;justify-content:center;transform:scale(0.6);transform-origin:center left}
+.mleg-pipe{flex-shrink:0;height:2.5px;width:20px;border-radius:1px}
+.mleg-dash{flex-shrink:0;width:20px;height:2.5px;background:repeating-linear-gradient(to right,#111827 0,#111827 5px,transparent 5px,transparent 9px)}
+.mleg-lbl{font-size:10px;color:#ccc;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
 /* Leaflet overrides */
 .leaflet-div-icon{background:none!important;border:none!important}
 .leaflet-marker-icon{cursor:pointer}
@@ -181,6 +191,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="banner" id="route-fail-banner" style="color:#DDD6FE">⚠ Pipe can't clear the building — move the STP or IC further away</div>
     <div class="banner" id="vio-banner" onclick="dismissVio()">⚠ <span id="vio-text">Placement is outside recommended parameters — tap to confirm</span></div>
     <div class="banner" id="midway-banner" style="display:none;color:#F59E0B">⊕ Tap the map to set the join point — it will snap to the nearest existing pipe</div>
+
+    <div id="map-legend"></div>
 
     <div id="load-overlay">
       <div id="load-card"><div class="spinner"></div><span id="load-text">Looking up boundary…</span></div>
@@ -2292,6 +2304,7 @@ function renderConnections(zoomOnly=false){
   // Only reset gravity suggestion state when doing a full (non-zoom) render,
   // so that zooming in/out doesn't clear gravSuggestShown and refire the modal.
   if(!zoomOnly && !hasLong){gravSuggestShown=false;gravSuggestDeclined=false;gravBannerDismissed=false;}
+  if(!zoomOnly)renderMapLegend();
 }
 
 // ── Pin HTML ──────────────────────────────────────────────────────────────────
@@ -2442,7 +2455,33 @@ function confirmDrainFieldPe(pe){
 }
 function cancelStpPe(){stpPlacePending=null;drainFieldPlacePending=null;hideModal('stp-pe-modal');}
 
-// ── Legend ────────────────────────────────────────────────────────────────────
+// ── Map legend overlay ────────────────────────────────────────────────────────
+function renderMapLegend(){
+  const leg=document.getElementById('map-legend');
+  if(!leg)return;
+  const placed=[...new Set(placedMarkers.map(m=>m.symbolId))].filter(id=>id!=='pipe_junction');
+  const conns=_cachedConns||[];
+  const hasGrav=conns.some(c=>c.type==='gravity'&&!c.routingFailed);
+  const hasPres=conns.some(c=>c.type==='pressure'&&!c.routingFailed);
+  const hasCable=conns.some(c=>c.type==='cable'&&!c.routingFailed);
+  if(!placed.length){leg.style.display='none';return;}
+  leg.style.display='block';
+  let h='<div class="mleg-title">Legend</div>';
+  h+='<div class="mleg-section">Assets</div>';
+  for(const id of placed){
+    const sym=SYM[id];if(!sym)continue;
+    h+=`<div class="mleg-row"><div class="mleg-ico">${pinHtml(sym,false,0,null)}</div><span class="mleg-lbl">${sym.label}</span></div>`;
+  }
+  if(hasGrav||hasPres||hasCable){
+    h+='<div class="mleg-section">Pipes</div>';
+    if(hasGrav) h+=`<div class="mleg-row"><div class="mleg-pipe" style="background:#92400E"></div><span class="mleg-lbl">Gravity foul drain</span></div>`;
+    if(hasPres) h+=`<div class="mleg-row"><div class="mleg-pipe" style="background:#2563EB"></div><span class="mleg-lbl">Pressure main</span></div>`;
+    if(hasCable)h+=`<div class="mleg-row"><div class="mleg-dash"></div><span class="mleg-lbl">Cable / conduit</span></div>`;
+  }
+  leg.innerHTML=h;
+}
+
+// ── Legend modal ──────────────────────────────────────────────────────────────
 function renderLegend(){
   const dimLabel=s=>{
     if(!s.dims)return'Point';
@@ -2694,6 +2733,22 @@ function _buildPlanSVG(){
     s+=`<text x="${bx}" y="${by+3}" text-anchor="middle" font-size="9" fill="#374151" font-weight="700" clip-path="url(#dc)">BUILDING</text>`;
   }
 
+  // Barrier / obstacle lines
+  for(const bl of barrierLines){
+    if(bl.length<2)continue;
+    const bpts=bl.map(p=>{const{x,y}=px(p.lat,p.lng);return`${x},${y}`;}).join(' ');
+    s+=`<polyline points="${bpts}" fill="none" stroke="#DC2626" stroke-width="2.5" stroke-dasharray="10,5" stroke-linecap="round" clip-path="url(#dc)"/>`;
+    // Label "OBSTACLE" at midpoint of barrier line
+    const mid=bl[Math.floor(bl.length/2)];
+    const prev=bl[Math.max(0,Math.floor(bl.length/2)-1)];
+    const{x:obx,y:oby}=px(mid.lat,mid.lng);
+    const{x:obx2,y:oby2}=px(prev.lat,prev.lng);
+    const odx=obx-obx2,ody=oby-oby2,old2=Math.hypot(odx,ody)||1;
+    const onx=-ody/old2*12,ony=odx/old2*12;
+    s+=`<rect x="${(obx+onx-22).toFixed(1)}" y="${(oby+ony-7).toFixed(1)}" width="44" height="12" rx="3" fill="white" fill-opacity="0.88" clip-path="url(#dc)"/>`;
+    s+=`<text x="${(obx+onx).toFixed(1)}" y="${(oby+ony+3).toFixed(1)}" text-anchor="middle" font-size="8" fill="#DC2626" font-weight="700" letter-spacing="0.5" clip-path="url(#dc)">OBSTACLE</text>`;
+  }
+
   // Connections
   const connsForPlan=_cachedConns||computeConns(placedMarkers);
   for(const c of connsForPlan){
@@ -2701,18 +2756,22 @@ function _buildPlanSVG(){
     const path=connectionWaypoints[c.id]??c.coords;
     if(!path||path.length<2)continue;
     const pts=path.map(p=>{const{x,y}=px(p.lat,p.lng);return`${x},${y}`;}).join(' ');
-    const arrId=c.type==='pressure'?'aP':c.type==='cable'?'aC':'aG';
-    s+=`<polyline points="${pts}" fill="none" stroke="${c.color}" stroke-width="${(c.width||2)+0.5}" ${c.dashed?'stroke-dasharray="10,6"':''} marker-end="url(#${arrId})" stroke-linecap="round" stroke-linejoin="round" clip-path="url(#dc)"/>`;
-    // Pipe length at midpoint
-    const len=path.reduce((d,p,i)=>{if(!i)return 0;const a=path[i-1];return d+Math.hypot((p.lat-a.lat)*111319,(p.lng-a.lng)*111319*cosLat);},0);
-    const lenStr=`${len.toFixed(1)}m`;
-    const mi=Math.floor(path.length/2);
-    const mp=path[mi],mp2=path[Math.max(0,mi-1)];
+    const arrId=c.type==='cable'?null:c.type==='pressure'?'aP':'aG';
+    s+=`<polyline points="${pts}" fill="none" stroke="${c.color}" stroke-width="${(c.width||2)+0.5}" ${c.dashed?'stroke-dasharray="10,6"':''} ${arrId?`marker-end="url(#${arrId})" `:''}stroke-linecap="round" stroke-linejoin="round" clip-path="url(#dc)"/>`;
+    // Pipe length label at true arc-length midpoint, offset perpendicular to pipe direction
+    const segs=[];
+    let totalLen=0;
+    for(let i=1;i<path.length;i++){const a=path[i-1],b=path[i];const sl=Math.hypot((b.lat-a.lat)*111319,(b.lng-a.lng)*111319*cosLat);segs.push({a,b,sl});totalLen+=sl;}
+    const lenStr=`${totalLen.toFixed(1)}m`;
+    const half=totalLen/2;
+    let cum=0,mp=null,mp2=null;
+    for(const seg of segs){if(cum+seg.sl>=half){const t=(half-cum)/seg.sl;mp={lat:seg.a.lat+t*(seg.b.lat-seg.a.lat),lng:seg.a.lng+t*(seg.b.lng-seg.a.lng)};mp2=seg.a;break;}cum+=seg.sl;}
+    if(!mp){mp=path[path.length-1];mp2=path[path.length-2]??mp;}
     const{x:mx,y:my}=px(mp.lat,mp.lng);
     const{x:mx2,y:my2}=px(mp2.lat,mp2.lng);
     const dx=mx-mx2,dy=my-my2,ld=Math.hypot(dx,dy)||1;
-    const nx=-dy/ld*11,ny=dx/ld*11;
-    s+=`<rect x="${(mx+nx-14).toFixed(1)}" y="${(my+ny-7).toFixed(1)}" width="28" height="12" rx="3" fill="white" fill-opacity="0.85" clip-path="url(#dc)"/>`;
+    const nx=-dy/ld*14,ny=dx/ld*14;
+    s+=`<rect x="${(mx+nx-15).toFixed(1)}" y="${(my+ny-7).toFixed(1)}" width="30" height="12" rx="3" fill="white" fill-opacity="0.9" clip-path="url(#dc)"/>`;
     s+=`<text x="${(mx+nx).toFixed(1)}" y="${(my+ny+3).toFixed(1)}" text-anchor="middle" font-size="8" fill="${c.color}" font-weight="700" clip-path="url(#dc)">${lenStr}</text>`;
   }
 
@@ -2781,18 +2840,42 @@ function _buildPlanSVG(){
   s+=`<text x="${DX+12}" y="${tbY+49}" font-size="9" fill="#374151">Date: ${today}${plantTxt?'   ·   '+plantTxt:''}</text>`;
   s+=`<text x="${DX+12}" y="${tbY+62}" font-size="9" fill="#374151">Scale: approx 1:${scaleDenom.toLocaleString()} (screen-dependent — refer to scale bar)</text>`;
   s+=`<text x="${DX+12}" y="${tbY+75}" font-size="8.5" fill="#9ca3af" font-style="italic">Preliminary drawing — for information only</text>`;
-  // Legend column
-  const legX=col2+12,legItems=[
-    {c:'#15803d',d:true, l:'Site boundary'},
-    {c:'#4b5563',d:false,l:'Building'},
+  // Legend column — pipe types + placed asset symbols
+  const legX=col2+10;
+  s+=`<text x="${legX}" y="${tbY+13}" font-size="8" font-weight="700" fill="#6b7280" letter-spacing="1">LEGEND</text>`;
+  const pipeItems=[
     {c:'#92400E',d:false,l:'Gravity foul drain'},
     {c:'#2563EB',d:false,l:'Pressure main'},
     {c:'#111827',d:true, l:'Cable / conduit'},
+    {c:'#15803d',d:true, l:'Site boundary'},
+    {c:'#4b5563',d:false,l:'Building (hatched)'},
   ];
-  legItems.forEach(({c,d,l},i)=>{
-    const ly=tbY+14+i*15;
-    s+=`<line x1="${legX}" y1="${ly}" x2="${legX+22}" y2="${ly}" stroke="${c}" stroke-width="2.5" ${d?'stroke-dasharray="8,4"':''}/>`;
-    s+=`<text x="${legX+27}" y="${ly+4}" font-size="9" fill="#374151">${l}</text>`;
+  pipeItems.forEach(({c,d,l},i)=>{
+    const ly=tbY+24+i*13;
+    s+=`<line x1="${legX}" y1="${ly}" x2="${legX+16}" y2="${ly}" stroke="${c}" stroke-width="2.5" ${d?'stroke-dasharray="6,3"':''}/>`;
+    s+=`<text x="${legX+20}" y="${ly+4}" font-size="8" fill="#374151">${l}</text>`;
+  });
+  // Placed asset symbols
+  const placedSymIds=[...new Set(placedMarkers.map(m=>m.symbolId))].filter(id=>id!=='pipe_junction');
+  const symLabels={well_borehole:'W',existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',kiosk:'K',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'};
+  placedSymIds.forEach((id,i)=>{
+    const sym=SYM[id];if(!sym)return;
+    const col=i<5?0:1;
+    const row=i<5?i:i-5;
+    const lx=legX+(col*88);
+    const ly=tbY+24+pipeItems.length*13+8+row*14;
+    if(i===0)s+=`<text x="${legX}" y="${tbY+24+pipeItems.length*13+3}" font-size="8" font-weight="700" fill="#6b7280" letter-spacing="1">ASSETS</text>`;
+    if(id==='sewage_treatment_plant'||id==='existing_septic_tank'){
+      s+=`<rect x="${lx}" y="${ly-5}" width="14" height="9" fill="${sym.color}99" stroke="${sym.color}" stroke-width="1.2"/>`;
+      s+=`<text x="${lx+7}" y="${ly+1}" text-anchor="middle" font-size="5" fill="white" font-weight="700">${symLabels[id]||'?'}</text>`;
+    }else if(id==='drainage_field'){
+      s+=`<rect x="${lx}" y="${ly-5}" width="10" height="9" fill="${sym.color}33" stroke="${sym.color}" stroke-width="1" stroke-dasharray="4,2"/>`;
+    }else{
+      const r=id==='new_inspection_chamber_small'?4:5;
+      s+=`<circle cx="${lx+5}" cy="${ly}" r="${r}" fill="${sym.color}" stroke="white" stroke-width="1"/>`;
+      s+=`<text x="${lx+5}" y="${ly+2}" text-anchor="middle" font-size="4" fill="white" font-weight="700">${symLabels[id]||'?'}</text>`;
+    }
+    s+=`<text x="${lx+14}" y="${ly+4}" font-size="8" fill="#374151">${sym.label}</text>`;
   });
   // Outer frame
   s+=`<rect x="3" y="3" width="${W-6}" height="${H-6}" fill="none" stroke="#333" stroke-width="2"/>`;
@@ -2969,6 +3052,7 @@ function clearAll(){
   _clearNearbyLayers();
   clearSelected();
   renderConnections();
+  renderMapLegend();
   updateVioBanner();updateClearBtn();
   autoSave();
 }
