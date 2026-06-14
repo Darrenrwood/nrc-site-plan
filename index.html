@@ -2739,6 +2739,97 @@ function openPlanView(){
   document.getElementById('plan-modal').classList.add('vis');
   // Unlock pinch-to-zoom while plan is open
   document.getElementById('vp').content='width=device-width, initial-scale=1.0, viewport-fit=cover';
+  // Load street map background asynchronously — updates <image id="plan-map-bg"> in place
+  _loadPlanMapBackground();
+}
+
+async function _loadPlanMapBackground(){
+  const imgEl=document.getElementById('plan-map-bg');
+  if(!imgEl)return;
+
+  // Recompute the same layout constants used in _buildPlanSVG
+  const allPts=[];
+  if(rings){for(const ring of rings)for(const p of ring)allPts.push(p);}
+  for(const poly of buildingPolygons)for(const p of poly)allPts.push(p);
+  for(const m of placedMarkers)allPts.push({lat:m.lat,lng:m.lng});
+  if(allPts.length<2)return;
+  const minLat=Math.min(...allPts.map(p=>p.lat));
+  const maxLat=Math.max(...allPts.map(p=>p.lat));
+  const minLng=Math.min(...allPts.map(p=>p.lng));
+  const maxLng=Math.max(...allPts.map(p=>p.lng));
+  const midLat=(minLat+maxLat)/2;
+  const cosLat=Math.cos(midLat*Math.PI/180);
+  const W=1080,H=720,TB=90,LW=230;
+  const DX=25,DY=25,DW=W-50-LW-15,DH=H-TB-50;
+  const PAD=45;
+  const extLng=(maxLng-minLng)*111319*cosLat||1;
+  const extLat=(maxLat-minLat)*111319||1;
+  const sc=Math.min((DW-2*PAD)/extLng,(DH-2*PAD)/extLat);
+  const ox=DX+PAD+(DW-2*PAD-extLng*sc)/2;
+  const oy=DY+PAD+(DH-2*PAD-extLat*sc)/2;
+
+  // Inverse projection: SVG pixel → geographic coordinate
+  const svgLat=y=>maxLat-(y-oy)/(111319*sc);
+  const svgLng=x=>minLng+(x-ox)/(111319*cosLat*sc);
+
+  // Geographic extent of the full drawing area (with a small margin for full tile coverage)
+  const drawMinLat=svgLat(DY+DH+16);
+  const drawMaxLat=svgLat(DY-16);
+  const drawMinLng=svgLng(DX-16);
+  const drawMaxLng=svgLng(DX+DW+16);
+
+  // OSM Web Mercator tile helpers
+  const lon2tile=(lon,z)=>Math.floor((lon+180)/360*Math.pow(2,z));
+  const lat2tile=(lat,z)=>Math.floor((1-Math.log(Math.tan(lat*Math.PI/180)+1/Math.cos(lat*Math.PI/180))/Math.PI)/2*Math.pow(2,z));
+  const tile2lon=(x,z)=>x/Math.pow(2,z)*360-180;
+  const tile2lat=(y,z)=>Math.atan(Math.sinh(Math.PI*(1-2*y/Math.pow(2,z))))*180/Math.PI;
+
+  // Choose zoom: highest zoom where the tile grid fits ≤ 25 tiles
+  let zoom=18;
+  for(let z=18;z>=12;z--){
+    const tx0=lon2tile(drawMinLng,z),tx1=lon2tile(drawMaxLng,z);
+    const ty0=lat2tile(drawMaxLat,z),ty1=lat2tile(drawMinLat,z);
+    if((tx1-tx0+1)*(ty1-ty0+1)<=25){zoom=z;break;}
+  }
+
+  const tx0=lon2tile(drawMinLng,zoom),tx1=lon2tile(drawMaxLng,zoom);
+  const ty0=lat2tile(drawMaxLat,zoom),ty1=lat2tile(drawMinLat,zoom);
+
+  // Composite tiles onto a canvas sized to the drawing area
+  const canvas=document.createElement('canvas');
+  canvas.width=DW;canvas.height=DH;
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#f8f8f8';
+  ctx.fillRect(0,0,DW,DH);
+
+  const tileJobs=[];
+  for(let tx=tx0;tx<=tx1;tx++){
+    for(let ty=ty0;ty<=ty1;ty++){
+      tileJobs.push((async()=>{
+        const url=`https://tile.openstreetmap.org/${zoom}/${tx}/${ty}.png`;
+        // Tile NW and SE corners → SVG pixels → canvas offsets
+        const nwLat=tile2lat(ty,zoom),nwLng=tile2lon(tx,zoom);
+        const seLat=tile2lat(ty+1,zoom),seLng=tile2lon(tx+1,zoom);
+        const cx=Math.round(ox+(nwLng-minLng)*111319*cosLat*sc)-DX;
+        const cy=Math.round(oy+(maxLat-nwLat)*111319*sc)-DY;
+        const cw=Math.round((seLng-nwLng)*111319*cosLat*sc);
+        const ch=Math.round((nwLat-seLat)*111319*sc);
+        if(cw<1||ch<1)return;
+        try{
+          await new Promise((res,rej)=>{
+            const img=new Image();
+            img.crossOrigin='anonymous';
+            img.onload=()=>{ctx.drawImage(img,cx,cy,cw,ch);res();};
+            img.onerror=rej;
+            img.src=url;
+          });
+        }catch(_){}
+      })());
+    }
+  }
+  await Promise.all(tileJobs);
+
+  imgEl.setAttribute('href',canvas.toDataURL('image/jpeg',0.82));
 }
 function closePlanView(){
   document.getElementById('plan-modal').classList.remove('vis');
@@ -2811,6 +2902,10 @@ function _buildPlanSVG(){
   // White sheet + drawing area
   s+=`<rect width="${W}" height="${H}" fill="#e8e8e8"/>`;
   s+=`<rect x="${DX}" y="${DY}" width="${DW}" height="${DH}" fill="white" stroke="#555" stroke-width="1"/>`;
+  // Street map background — populated asynchronously by _loadPlanMapBackground()
+  s+=`<image id="plan-map-bg" x="${DX}" y="${DY}" width="${DW}" height="${DH}" href="" preserveAspectRatio="none" opacity="0.3"/>`;
+  // Attribution required by OSM tile usage policy
+  s+=`<text x="${DX+DW-4}" y="${DY+DH-4}" text-anchor="end" font-size="6.5" fill="#6b7280" font-family="Arial,sans-serif">© OpenStreetMap contributors</text>`;
 
   // Site boundary
   if(rings){
