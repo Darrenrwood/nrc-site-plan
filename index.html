@@ -2926,9 +2926,6 @@ function _buildPlanSVG(){
     const pts=poly.map(p=>{const{x,y}=px(p.lat,p.lng);return`${x},${y}`;}).join(' ');
     s+=`<polygon points="${pts}" fill="url(#bldHatch)" stroke="#4b5563" stroke-width="1.5" clip-path="url(#dc)"/>`;
     s+=`<polygon points="${pts}" fill="none" stroke="#374151" stroke-width="1.5" clip-path="url(#dc)"/>`;
-    const cen=poly.reduce((a,p)=>({lat:a.lat+p.lat/poly.length,lng:a.lng+p.lng/poly.length}),{lat:0,lng:0});
-    const{x:bx,y:by}=px(cen.lat,cen.lng);
-    s+=`<text x="${bx}" y="${by+3}" text-anchor="middle" font-size="9" fill="#374151" font-weight="700" clip-path="url(#dc)">BUILDING</text>`;
   }
 
   // Barrier / obstacle lines
@@ -3135,7 +3132,11 @@ function _buildPlanSVG(){
   legy+=4;
   _legSec('SITE FEATURES');
   _legLine('#15803d',true,2,'Site boundary');
-  _legLine('#4b5563',false,2,'Building / structure');
+  // Building — hatched box matching plan view symbol
+  s+=`<rect x="${LX+8}" y="${legy-1}" width="22" height="14" fill="url(#bldHatch)" stroke="#4b5563" stroke-width="1.2"/>`;
+  s+=`<rect x="${LX+8}" y="${legy-1}" width="22" height="14" fill="none" stroke="#374151" stroke-width="1.2"/>`;
+  s+=`<text x="${LX+36}" y="${legy+9}" font-size="9" fill="#374151">Building / structure</text>`;
+  legy+=17;
   _legLine('#DC2626',true,2,'Obstacle / barrier');
   legy+=4;
   // Placed assets
