@@ -531,6 +531,27 @@ let suggestCircles = [];
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 // Compass bearing in degrees (0° = north, CW) from point `a` to point `b`.
+// Returns the bearing (degrees) of the nearest boundary/building edge within maxD metres,
+// or null if none is found within that distance.
+function _nearestEdgeBearing(lat,lng,maxD){
+  let bestD=maxD+1,bestBear=null;
+  const p={lat,lng};
+  const cl=Math.cos(lat*Math.PI/180);
+  const _check=(poly)=>{
+    for(let i=0;i<poly.length;i++){
+      const a=poly[i],b=poly[(i+1)%poly.length];
+      const px2=(p.lng-a.lng)*111319*cl,py2=(p.lat-a.lat)*111319;
+      const bx=(b.lng-a.lng)*111319*cl,by=(b.lat-a.lat)*111319;
+      const len2=bx*bx+by*by;if(!len2)continue;
+      const t=Math.max(0,Math.min(1,(px2*bx+py2*by)/len2));
+      const d=Math.hypot(px2-t*bx,py2-t*by);
+      if(d<bestD){bestD=d;bestBear=bearingDeg(a,b);}
+    }
+  };
+  if(rings&&rings[0])_check(rings[0]);
+  buildingPolygons.forEach(_check);
+  return bestBear;
+}
 function bearingDeg(a,b){
   const cl=Math.cos(a.lat*Math.PI/180);
   return Math.atan2((b.lng-a.lng)*cl, b.lat-a.lat)*180/Math.PI;
@@ -1867,6 +1888,10 @@ function addMarker(m){
       // Exception: if actual width > depth the short sides are E/W, so rotation = θ − 90.
       const {width,depth}=effDims(m,SYM.drainage_field);
       m.rotation=width>depth?bearingDeg(m,pump)-90:bearingDeg(m,pump);
+    }else if((m.symbolId==='kiosk'||m.symbolId==='electrical_point')&&m.rotation==null){
+      // Auto-orient parallel to nearest boundary/building edge within 5 m
+      const edgeBear=_nearestEdgeBearing(m.lat,m.lng,5);
+      if(edgeBear!==null)m.rotation=edgeBear-90;
     }
   }
   placedMarkers.push(m);
@@ -2343,8 +2368,12 @@ function pinHtml(sym,isVio,rot,labelOverride){
       <div style="width:13px;height:5px;border-radius:2px;background:${c}"></div></div>`;
   }
   if(sym.id==='kiosk'){
-    return`<div style="width:42px;height:32px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${pulse}">
+    return`<div style="width:42px;height:32px;background:#fff;border:2.5px solid ${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}${pulse}">
       <div style="width:34px;height:24px;border-radius:3px;background:${sym.color};display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">K</div></div>`;
+  }
+  if(sym.id==='electrical_point'){
+    return`<div style="width:32px;height:32px;background:${bc};border-radius:4px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,.45);${tr}${pulse}">
+      <span style="color:#fff;font-size:13px;font-weight:700;line-height:1">E</span></div>`;
   }
   const label=labelOverride||{well_borehole:'W',existing_septic_tank:'ST',last_inspection_chamber:'IC',existing_inspection_chamber:'IC',new_inspection_chamber_large:'IC',new_inspection_chamber_small:'IC',pumping_station:'PS',discharge_point:'DP',electrical_point:'E'}[sym.id]||'?';
   const sz=sym.small?26:34,br=sz/2,bw=sym.small?2:2.5,inner=sym.small?18:24;
@@ -2752,9 +2781,8 @@ function _buildPlanSVG(){
     const{x:mx,y:my}=px(mp.lat,mp.lng);
     const{x:mx2,y:my2}=px(mp2.lat,mp2.lng);
     const dx=mx-mx2,dy=my-my2,ld=Math.hypot(dx,dy)||1;
-    const nx=-dy/ld*14,ny=dx/ld*14;
-    s+=`<rect x="${(mx+nx-15).toFixed(1)}" y="${(my+ny-7).toFixed(1)}" width="30" height="12" rx="3" fill="white" fill-opacity="0.9" clip-path="url(#dc)"/>`;
-    s+=`<text x="${(mx+nx).toFixed(1)}" y="${(my+ny+3).toFixed(1)}" text-anchor="middle" font-size="8" fill="${c.color}" font-weight="700" clip-path="url(#dc)">${lenStr}</text>`;
+    const nx=-dy/ld*20,ny=dx/ld*20;
+    s+=`<text x="${(mx+nx).toFixed(1)}" y="${(my+ny+3).toFixed(1)}" text-anchor="middle" font-size="9" fill="${c.color}" stroke="white" stroke-width="3" paint-order="stroke" font-weight="700" clip-path="url(#dc)">${lenStr}</text>`;
     // Direction arrows: gravity+pressure only; 1 at midpoint if ≤50m, else one every 25m
     if(c.type!=='cable'){
       const arrowDs=totalLen<=50?[half]:[];
@@ -2769,7 +2797,7 @@ function _buildPlanSVG(){
             const{x:sx1,y:sy1}=px(seg.a.lat,seg.a.lng);
             const{x:sx2,y:sy2}=px(seg.b.lat,seg.b.lng);
             const ang=Math.atan2(sy2-sy1,sx2-sx1)*180/Math.PI;
-            s+=`<path d="M-6,-4 L5,0 L-6,4 Z" fill="${c.color}" stroke="none" transform="translate(${ax.toFixed(1)},${ay.toFixed(1)}) rotate(${ang.toFixed(1)})" clip-path="url(#dc)"/>`;
+            s+=`<path d="M-9,-5 L8,0 L-9,5 Z" fill="${c.color}" stroke="white" stroke-width="1.5" stroke-linejoin="round" transform="translate(${ax.toFixed(1)},${ay.toFixed(1)}) rotate(${ang.toFixed(1)})" clip-path="url(#dc)"/>`;
             break;
           }
           ac+=seg.sl;
@@ -2795,7 +2823,7 @@ function _buildPlanSVG(){
       const rot=m.rotation||0;
       const lbl=m.symbolId==='sewage_treatment_plant'?'STP':'ST';
       s+=`<g transform="rotate(${rot},${x},${y})"><rect x="${(x-rw).toFixed(1)}" y="${(y-rh).toFixed(1)}" width="${(rw*2).toFixed(1)}" height="${(rh*2).toFixed(1)}" fill="${sym.color}aa" stroke="${sym.color}" stroke-width="2.5"/><text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="11" fill="white" font-weight="700">${lbl}</text></g>`;
-      s+=`<text x="${x}" y="${(+y+parseFloat(rh)+14).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1f2937" clip-path="url(#dc)">${sym.shortLabel}</text>`;
+      if(m.symbolId==='existing_septic_tank')s+=`<text x="${x}" y="${(+y+parseFloat(rh)+14).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1f2937" clip-path="url(#dc)">${sym.shortLabel}</text>`;
       continue;
     }
     if(m.symbolId==='drainage_field'){
@@ -2803,6 +2831,14 @@ function _buildPlanSVG(){
       const rw=(width*sc/2).toFixed(1),rh=(depth*sc/2).toFixed(1);
       const rot=m.rotation||0;
       s+=`<g transform="rotate(${rot},${x},${y})"><rect x="${(x-rw).toFixed(1)}" y="${(y-rh).toFixed(1)}" width="${(rw*2).toFixed(1)}" height="${(rh*2).toFixed(1)}" fill="${sym.color}2a" stroke="${sym.color}" stroke-width="2" stroke-dasharray="10,5"/><text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="10" fill="${sym.color}" font-weight="700">DRAIN FIELD</text></g>`;
+      continue;
+    }
+    // Electrical point — square
+    if(m.symbolId==='electrical_point'){
+      const sq=10;
+      s+=`<rect x="${(x-sq).toFixed(1)}" y="${(y-sq).toFixed(1)}" width="${(sq*2)}" height="${(sq*2)}" fill="${sym.color}" stroke="white" stroke-width="1.5" clip-path="url(#dc)"/>`;
+      s+=`<text x="${x}" y="${(+y+4).toFixed(1)}" text-anchor="middle" font-size="9" fill="white" font-weight="700" clip-path="url(#dc)">E</text>`;
+      s+=`<text x="${x}" y="${(+y+sq+12).toFixed(1)}" text-anchor="middle" font-size="9" fill="#1f2937" clip-path="url(#dc)">${sym.shortLabel}</text>`;
       continue;
     }
     // Well / Borehole — three concentric circles with W label
@@ -2892,6 +2928,9 @@ function _buildPlanSVG(){
         s+=`<circle cx="${LX+16}" cy="${sy}" r="6" fill="none" stroke="${sym.color}" stroke-width="1.5"/>`;
         s+=`<circle cx="${LX+16}" cy="${sy}" r="3.5" fill="none" stroke="${sym.color}" stroke-width="1"/>`;
         s+=`<circle cx="${LX+16}" cy="${sy}" r="1.5" fill="${sym.color}"/>`;
+      }else if(id==='electrical_point'){
+        s+=`<rect x="${LX+8}" y="${sy-6}" width="16" height="12" fill="${sym.color}" stroke="white" stroke-width="1"/>`;
+        s+=`<text x="${LX+16}" y="${sy+2}" text-anchor="middle" font-size="6" fill="white" font-weight="700">E</text>`;
       }else{
         const r=id==='new_inspection_chamber_small'?4:5;
         s+=`<circle cx="${LX+16}" cy="${sy}" r="${r}" fill="${sym.color}" stroke="white" stroke-width="1"/>`;
