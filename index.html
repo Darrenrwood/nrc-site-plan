@@ -3602,7 +3602,6 @@ function _wgs84ToBng(lat,lng){
 }
 
 async function _tryFetchPropertyAtPoint(lat,lng){
-  _showLocToast('🔍 Looking up nearby boundaries…','#1d4ed8',30000);
   try{
     // ── Fast path: previously remembered title near this GPS position ──────────
     try{
@@ -3699,7 +3698,6 @@ async function _tryFetchPropertyAtPoint(lat,lng){
     }
 
     if(!titles.size){
-      _showLocToast(`❌ No boundary found here — type your title number once and tap → (GPS auto-loads on future visits) [${diag.join(' ')}]`,'#7f1d1d',15000);
       return;
     }
 
